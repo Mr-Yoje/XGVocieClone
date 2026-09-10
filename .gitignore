@@ -1,0 +1,10 @@
+third_party/
+pretrained_models/
+outputs/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.wav
+!prompts/.gitkeep
