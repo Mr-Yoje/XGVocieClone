@@ -11,9 +11,19 @@
 
 ## 环境要求
 
-- Git、Miniconda（Python 3.10）
+- Git、Miniconda（Python 3.10）；或 **Google Colab T4 GPU**
 - 建议 GPU 显存 **≥ 6 GB**。2 GB 级显卡（例如 MX450）会自动改走 CPU，能跑但很慢。
 - 参考音频：**3–10 秒**、单人、尽量少噪声；**必须提供逐字转写**。
+
+## Google Colab
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Mr-Yoje/XGVocieClone/blob/main/colab_clone.ipynb)
+
+1. 打开上面的徽章（或手动打开 [`colab_clone.ipynb`](https://colab.research.google.com/github/Mr-Yoje/XGVocieClone/blob/main/colab_clone.ipynb)）。
+2. **代码执行程序 → 更改运行时类型 → T4 GPU**。
+3. 依次运行所有单元格。启动完成后点日志里的 Gradio 公网链接即可试用（默认对比 RL 与基座）。
+
+Colab 使用预装的 CUDA PyTorch，不走 conda。脚本见 `setup_colab.sh`。
 
 ## 一键准备（Windows PowerShell）
 
