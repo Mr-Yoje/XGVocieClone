@@ -24,6 +24,36 @@ conda activate cosyvoice
 python download_models.py
 ```
 
+## 一键启动（Ubuntu）
+
+```bash
+cd /path/to/XGVocieClone
+chmod +x setup_env.sh start_ubuntu.sh
+bash start_ubuntu.sh
+```
+
+脚本会：安装 git/sox/ffmpeg（需 sudo）→ 没有 conda 则装 Miniconda 到项目内 `.miniconda3` → 克隆 CosyVoice → 建 `cosyvoice` 环境 → 下载权重 → 启动 Web 界面。
+
+常用参数：
+
+```bash
+bash start_ubuntu.sh --listen          # 监听 0.0.0.0，局域网可访问
+bash start_ubuntu.sh --port 7860
+bash start_ubuntu.sh --fp16 --force-gpu
+bash start_ubuntu.sh --setup-only      # 只装环境
+bash start_ubuntu.sh --skip-download   # 权重已下好时跳过下载
+```
+
+只装环境、自己启动也可以：
+
+```bash
+bash setup_env.sh
+source .miniconda3/etc/profile.d/conda.sh   # 或你本机的 conda.sh
+conda activate cosyvoice
+python download_models.py
+python webui_clone.py
+```
+
 国内网络优先走 ModelScope；若失败：
 
 ```powershell

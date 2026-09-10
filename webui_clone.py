@@ -130,6 +130,7 @@ def main() -> None:
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--force-gpu", action="store_true")
     parser.add_argument("--port", type=int, default=7860)
+    parser.add_argument("--server-name", default="127.0.0.1", help="监听地址，局域网访问可用 0.0.0.0")
     parser.add_argument("--share", action="store_true")
     args = parser.parse_args()
 
@@ -181,7 +182,7 @@ def main() -> None:
             outputs=[output_rl, output_base, info],
         )
 
-    demo.queue().launch(server_name="127.0.0.1", server_port=args.port, share=args.share)
+    demo.queue().launch(server_name=args.server_name, server_port=args.port, share=args.share)
 
 
 if __name__ == "__main__":

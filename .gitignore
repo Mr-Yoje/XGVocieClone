@@ -3,6 +3,7 @@ pretrained_models/
 outputs/
 .venv/
 venv/
+.miniconda3/
 __pycache__/
 *.pyc
 .DS_Store
