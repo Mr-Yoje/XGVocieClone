@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Google Colab / 云端 GPU 环境：不装 conda，沿用系统里已有的 CUDA PyTorch。
+# Google Colab / 云端 GPU：沿用预装 CUDA PyTorch，只装推理依赖。
+# 官方 requirements 钉死 grpcio==1.57.0 / deepspeed，在 Python 3.12+ 无法构建。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,6 +9,7 @@ cd "$ROOT"
 COSY_DIR="${ROOT}/third_party/CosyVoice"
 MODEL_DIR="${ROOT}/pretrained_models/Fun-CosyVoice3-0.5B"
 DOWNLOAD_SOURCE="${DOWNLOAD_SOURCE:-huggingface}"
+REQ_FILTERED="$(mktemp)"
 
 log() { printf '\n==> %s\n' "$*"; }
 
@@ -25,13 +27,73 @@ else
   git -C "$COSY_DIR" submodule update --init --recursive
 fi
 
-log "安装 Python 依赖（跳过 torch/torchaudio，保留 Colab 预装 CUDA 版）"
-REQ_FILTERED="$(mktemp)"
-grep -viE '^(torch|torchaudio|torchvision)([=<>! ]|$)' "${COSY_DIR}/requirements.txt" > "$REQ_FILTERED" || true
-python -m pip install -U pip
-python -m pip install -r "$REQ_FILTERED"
-python -m pip install modelscope huggingface_hub gradio
+log "生成推理依赖列表（跳过 torch / grpcio / deepspeed 等，并在 Py3.12+ 放开版本钉）"
+python - "$COSY_DIR/requirements.txt" "$REQ_FILTERED" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+src, dst = Path(sys.argv[1]), Path(sys.argv[2])
+skip = re.compile(
+    r"^(torch|torchaudio|torchvision|grpcio|deepspeed|tensorrt|vllm|nvidia-)",
+    re.I,
+)
+py312 = sys.version_info >= (3, 12)
+out = []
+for raw in src.read_text(encoding="utf-8", errors="ignore").splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#") or line.startswith("--"):
+        continue
+    name = re.split(r"[<>=!; \[]", line, 1)[0]
+    if skip.match(name):
+        print(f"skip {name}", flush=True)
+        continue
+    if py312:
+        marker = ""
+        pkg = line
+        if ";" in line:
+            pkg, marker = line.split(";", 1)
+            marker = ";" + marker.strip()
+        pkg = re.split(r"[=<>!~]", pkg, 1)[0].strip()
+        line = pkg + marker
+    out.append(line)
+dst.write_text("\n".join(out) + "\n", encoding="utf-8")
+print(f"kept {len(out)} packages -> {dst}", flush=True)
+PY
+
+log "安装 Python 依赖"
+python -m pip install -U pip wheel setuptools
+set +e
+python -m pip install --prefer-binary -r "$REQ_FILTERED"
+batch_status=$?
+set -e
+if [[ "$batch_status" -ne 0 ]]; then
+  log "批量安装失败，改为逐包安装（失败的包会跳过）"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "${line// }" ]] && continue
+    python -m pip install --prefer-binary $line && continue
+    echo "WARN: skip $line"
+  done < "$REQ_FILTERED"
+fi
 rm -f "$REQ_FILTERED"
+
+# ONNX 语音 tokenizer：优先 GPU runtime，没有 cp313 轮子则退回 CPU
+python - <<'PY'
+import importlib.util
+import subprocess
+import sys
+
+def installed(name: str) -> bool:
+    return importlib.util.find_spec(name) is not None
+
+if not installed("onnxruntime"):
+    for pkg in ("onnxruntime-gpu", "onnxruntime"):
+        print(f"try {pkg}", flush=True)
+        if subprocess.call([sys.executable, "-m", "pip", "install", "--prefer-binary", pkg]) == 0:
+            break
+PY
+
+python -m pip install --prefer-binary modelscope huggingface_hub gradio HyperPyYAML wetext WeTextProcessing inflect
 
 if [[ ! -f "${MODEL_DIR}/llm.rl.pt" ]]; then
   log "下载 Fun-CosyVoice3-0.5B-2512（含 llm.rl.pt），约 7GB+"
@@ -42,8 +104,15 @@ fi
 
 log "Colab 环境就绪。"
 python - <<'PY'
+import sys
 import torch
+print("python", sys.version.split()[0])
 print("torch", torch.__version__, "cuda", torch.cuda.is_available())
 if torch.cuda.is_available():
-    print("gpu", torch.cuda.get_device_name(0), "vram_gb", round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 1))
+    print(
+        "gpu",
+        torch.cuda.get_device_name(0),
+        "vram_gb",
+        round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 1),
+    )
 PY
