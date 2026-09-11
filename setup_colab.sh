@@ -62,7 +62,9 @@ print(f"kept {len(out)} packages -> {dst}", flush=True)
 PY
 
 log "安装 Python 依赖"
-python -m pip install -U pip wheel setuptools
+# Colab 预装 torch 要求 setuptools<82，不要把 setuptools 升到 84
+python -m pip install -U pip wheel
+python -m pip install "setuptools>=70,<82"
 set +e
 python -m pip install --prefer-binary -r "$REQ_FILTERED"
 batch_status=$?
@@ -94,7 +96,12 @@ if not installed("onnxruntime"):
 PY
 
 python -m pip install --prefer-binary modelscope huggingface_hub gradio HyperPyYAML wetext WeTextProcessing inflect
-python -m pip install --prefer-binary -U qwen-tts
+
+log "安装 qwen-tts（--no-deps，避免把 transformers / huggingface_hub / gradio 降级）"
+python -m pip install --prefer-binary --no-deps qwen-tts
+python -m pip install --prefer-binary sox
+# 若之前已被 qwen-tts 0.1.1 拉低 huggingface_hub，diffusers 会报冲突；拉回 1.x
+python -m pip install --prefer-binary "huggingface_hub>=1.23"
 
 if [[ ! -f "${MODEL_DIR}/llm.rl.pt" ]]; then
   log "下载 Fun-CosyVoice3-0.5B-2512（含 llm.rl.pt），约 7GB+"
@@ -105,10 +112,25 @@ fi
 
 log "Colab 环境就绪。"
 python - <<'PY'
+import importlib.metadata as md
 import sys
 import torch
+
+def ver(name: str) -> str:
+    try:
+        return md.version(name)
+    except Exception:
+        return "missing"
+
 print("python", sys.version.split()[0])
 print("torch", torch.__version__, "cuda", torch.cuda.is_available())
+print("transformers", ver("transformers"), "huggingface_hub", ver("huggingface_hub"))
+print("gradio", ver("gradio"), "qwen-tts", ver("qwen-tts"))
+try:
+    import qwen_tts  # noqa: F401
+    print("qwen_tts import OK")
+except Exception as exc:  # noqa: BLE001
+    print("qwen_tts import FAIL", exc)
 if torch.cuda.is_available():
     print(
         "gpu",

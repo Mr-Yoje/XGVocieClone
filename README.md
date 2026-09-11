@@ -21,7 +21,7 @@
 
 1. 打开上面的徽章（或手动打开 [`colab_clone.ipynb`](https://colab.research.google.com/github/Mr-Yoje/XGVocieClone/blob/main/colab_clone.ipynb)）。
 2. **代码执行程序 → 更改运行时类型 → T4 GPU**。
-3. 依次运行所有单元格。启动完成后点日志里的 Gradio 公网链接即可试用（对比 CosyVoice RL / 基座 / Qwen3-TTS-0.6B）。
+3. 依次运行单元格。启动格会**后台**拉起 WebUI；日志里的 Gradio 公网链接即可试用。要停止请运行笔记本里的 **「停止 / 退出 WebUI」**（`bash colab_webui.sh stop`），不要只点中断。
 
 Colab 使用预装的 CUDA PyTorch，不走 conda。脚本见 `setup_colab.sh`。
 

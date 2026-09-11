@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import sys
 import tempfile
 import time
@@ -266,7 +267,27 @@ def main() -> None:
             outputs=[output_rl, output_base, output_qwen, info],
         )
 
-    demo.queue().launch(server_name=args.server_name, server_port=args.port, share=args.share)
+    def _on_signal(signum, _frame):
+        print(f"\n收到信号 {signum}，正在关闭 Gradio…", flush=True)
+        try:
+            demo.close()
+        except Exception:
+            pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _on_signal)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _on_signal)
+
+    try:
+        demo.queue().launch(server_name=args.server_name, server_port=args.port, share=args.share)
+    except KeyboardInterrupt:
+        print("\nKeyboardInterrupt，正在关闭…", flush=True)
+        try:
+            demo.close()
+        except Exception:
+            pass
+        sys.exit(0)
 
 
 if __name__ == "__main__":
