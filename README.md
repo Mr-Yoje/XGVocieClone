@@ -21,7 +21,7 @@
 
 1. 打开上面的徽章（或手动打开 [`colab_clone.ipynb`](https://colab.research.google.com/github/Mr-Yoje/XGVocieClone/blob/main/colab_clone.ipynb)）。
 2. **代码执行程序 → 更改运行时类型 → T4 GPU**。
-3. 依次运行所有单元格。启动完成后点日志里的 Gradio 公网链接即可试用（默认对比 RL 与基座）。
+3. 依次运行所有单元格。启动完成后点日志里的 Gradio 公网链接即可试用（对比 CosyVoice RL / 基座 / Qwen3-TTS-0.6B）。
 
 Colab 使用预装的 CUDA PyTorch，不走 conda。脚本见 `setup_colab.sh`。
 
@@ -124,7 +124,15 @@ conda activate cosyvoice
 python webui_clone.py
 ```
 
-浏览器打开 `http://127.0.0.1:7860`。默认模式是 **纯文本 TTS（官方默认音色）**：只填要说的句子，左右对比 RL 与基座。克隆请改选「克隆：对比 RL 与基座」并上传 3–10 秒参考音。
+浏览器打开 `http://127.0.0.1:7860`。默认模式是 **纯文本 TTS（官方默认音色）**：只填要说的句子，对比 CosyVoice RL、基座，以及 **Qwen3-TTS-12Hz-0.6B-Base**（同一默认参考音）。克隆请改选「克隆：对比 RL / 基座 / Qwen3」并上传 3–10 秒参考音。基座与 RL 默认各加载一份 CosyVoice（同一输入、两路独立输出）；T4 显存不够可加 `--shared-talker` 或关掉 Qwen（`--no-qwen`）。
+
+首次对比 Qwen 会从 Hugging Face 拉取 `Qwen/Qwen3-TTS-12Hz-0.6B-Base`（也可预先放到 `pretrained_models/Qwen3-TTS-12Hz-0.6B-Base`）。需安装：`pip install -U qwen-tts`。
+
+命令行同时出 Qwen 结果：
+
+```powershell
+python demo_clone.py --tts-only --with-qwen --text "八百标兵奔北坡，北坡炮兵并排跑。"
+```
 
 命令行纯文本 TTS：
 
@@ -136,5 +144,5 @@ python demo_clone.py --tts-only --text "八百标兵奔北坡，北坡炮兵并�
 
 1. CosyVoice 3 的 prompt 会自动加上 `You are a helpful assistant.<|endofprompt|>`，你只需填录音原文。
 2. 目标文本过短、明显短于参考转写时，官方会告警，效果可能变差。
-3. 首次 CPU 推理可能要数分钟；有 8GB+ 显存时可加 `--fp16 --force-gpu`。
+3. 首次 CPU 推理可能要数分钟；有 8GB+ 显存时可加 `--fp16 --force-gpu`。`--fp16` 只启用官方 autocast，不会把 `llm.pt` / `llm.rl.pt` 整模转成 half（转 half 会导致 RL 0 秒、基座乱说）。
 4. 仅用于你有权使用的声音样本（本人或已授权音色）。

@@ -26,6 +26,28 @@ def wrap_prompt_text(transcript: str) -> str:
     return PROMPT_PREFIX + text
 
 
+def wrap_instruct_text(instruct: str) -> str:
+    """Official CosyVoice3 instruct2: style goes before <|endofprompt|>."""
+    text = instruct.strip()
+    if "<|endofprompt|>" in text:
+        return text
+    if text.startswith("You are a helpful assistant."):
+        body = text[len("You are a helpful assistant.") :].strip()
+        return f"You are a helpful assistant. {body}<|endofprompt|>"
+    return f"You are a helpful assistant. {text}<|endofprompt|>"
+
+
+def prompt_length_warning(tts_text: str, prompt_text: str) -> str | None:
+    tts = tts_text.strip()
+    prompt = prompt_text.strip()
+    if prompt and len(tts) < 0.5 * len(prompt):
+        return (
+            f"目标文本过短（{len(tts)} 字）相对参考转写（{len(prompt)} 字），"
+            "CosyVoice3 容易复读参考音、对不上要说的句子。请加长要合成的文本，或换更短的参考音。"
+        )
+    return None
+
+
 def default_prompt_wav_candidates(cosyvoice_root: Path, model_dir: Optional[Path] = None) -> list:
     root = Path(__file__).resolve().parent
     paths = [
@@ -94,15 +116,29 @@ def llm_checkpoint_path(model_dir: Path, variant: str) -> Path:
     return path
 
 
-def _unwrap_state_dict(state):
-    if not isinstance(state, dict):
+def coerce_llm_state_dict(state):
+    """Use raw nn.Module state_dict as-is. Only unwrap training checkpoint wrappers."""
+    if not isinstance(state, dict) or not state:
+        return state
+    weight_like = 0
+    for value in state.values():
+        if isinstance(value, dict):
+            continue
+        if isinstance(value, (int, float, str, bool, type(None), list, tuple)):
+            continue
+        weight_like += 1
+    if weight_like >= max(1, (len(state) + 1) // 2):
+        first = next(iter(state))
+        if isinstance(first, str) and first.startswith("module."):
+            return {k[len("module.") :]: v for k, v in state.items()}
         return state
     if "state_dict" in state and isinstance(state["state_dict"], dict):
-        state = state["state_dict"]
-    elif "model" in state and isinstance(state["model"], dict):
-        state = state["model"]
-    if state and next(iter(state)).startswith("module."):
-        state = {k[len("module.") :]: v for k, v in state.items()}
+        return coerce_llm_state_dict(state["state_dict"])
+    if "model" in state and isinstance(state["model"], dict):
+        return coerce_llm_state_dict(state["model"])
+    first = next(iter(state))
+    if isinstance(first, str) and first.startswith("module."):
+        return {k[len("module.") :]: v for k, v in state.items()}
     return state
 
 
@@ -124,25 +160,80 @@ def reset_runtime_state(cosyvoice) -> None:
 
 
 def apply_llm_weights(cosyvoice, ckpt_path: Path, label: str = "") -> None:
+    """Load talker the same way CosyVoiceModel.load does: fp32 state_dict, no .half()."""
     import torch
 
     device = getattr(cosyvoice.model, "device", None)
     if device is None:
         device = next(cosyvoice.model.llm.parameters()).device
-    state = _unwrap_state_dict(torch.load(str(ckpt_path), map_location=device, weights_only=True))
-    cosyvoice.model.llm.load_state_dict(state, strict=True)
-    if getattr(cosyvoice.model, "fp16", False):
-        cosyvoice.model.llm.half()
+    raw = torch.load(str(ckpt_path), map_location=device, weights_only=True)
+    state = coerce_llm_state_dict(raw)
+    result = cosyvoice.model.llm.load_state_dict(state, strict=False)
+    if isinstance(result, tuple):
+        missing, unexpected = list(result[0]), list(result[1])
     else:
-        cosyvoice.model.llm.float()
+        missing = list(getattr(result, "missing_keys", []))
+        unexpected = list(getattr(result, "unexpected_keys", []))
+    tag = label or ckpt_path.name
+    if missing:
+        raise RuntimeError(f"{tag} 权重缺少 {len(missing)} 个参数，例如 {missing[:5]}")
+    if unexpected:
+        print(f"[warn] {tag} 忽略多余键 {len(unexpected)} 个，例如 {unexpected[:8]}")
+    # Official path keeps fp32 weights and uses autocast when fp16=True. Casting the
+    # whole LLM to half here makes RL emit 0s and the base talker babble.
     cosyvoice.model.llm.to(device).eval()
     reset_runtime_state(cosyvoice)
-    tag = label or ckpt_path.name
     print(f"已加载 talker 权重 ({tag}): {ckpt_path}")
 
 
 def apply_rl_weights(cosyvoice, model_dir: Path) -> None:
     apply_llm_weights(cosyvoice, llm_checkpoint_path(model_dir, "rl"), label="RL")
+
+
+def _is_oom(exc: BaseException) -> bool:
+    if "OutOfMemory" in type(exc).__name__:
+        return True
+    return "out of memory" in str(exc).lower()
+
+
+def load_independent_cosyvoices(
+    model_dir: Path,
+    fp16: bool,
+    *,
+    shared_talker: bool = False,
+    AutoModel=None,
+    apply_rl=None,
+    rl_ckpt: Optional[Path] = None,
+):
+    """Load base and RL as two AutoModel instances. Same input later, separate weights/outputs.
+
+    If VRAM cannot hold two copies, fall back to one shared engine (caller must swap weights).
+    """
+    if AutoModel is None:
+        from cosyvoice.cli.cosyvoice import AutoModel as AutoModel
+
+    apply_rl = apply_rl or apply_llm_weights
+    model_dir = Path(model_dir)
+    rl_ckpt = Path(rl_ckpt) if rl_ckpt is not None else llm_checkpoint_path(model_dir, "rl")
+    kwargs = dict(model_dir=str(model_dir), load_trt=False, fp16=fp16)
+    print("加载 CosyVoice 基座（llm.pt）")
+    base = AutoModel(**kwargs)
+    if shared_talker:
+        print("shared_talker：基座与 RL 共用一份引擎，推理时切换权重")
+        return {"base": base, "rl": base}, True
+    print("再加载一份 CosyVoice，并单独灌入 llm.rl.pt")
+    try:
+        rl = AutoModel(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        if not _is_oom(exc):
+            raise
+        print(f"[warn] 第二份 CosyVoice 显存不足，回退共用引擎: {exc}")
+        return {"base": base, "rl": base}, True
+    apply_rl(rl, rl_ckpt, label="RL")
+    if rl is base:
+        raise RuntimeError("RL 与基座必须是两个独立实例")
+    print("基座与 RL 已独立加载，之后不再互相覆盖权重")
+    return {"base": base, "rl": rl}, False
 
 
 def prepare_wav_tensor(speech):
@@ -175,12 +266,12 @@ def concatenate_speech(chunks: list):
         wav = chunk.get("tts_speech") if isinstance(chunk, dict) else chunk
         if wav is None:
             continue
-        try:
-            waves.append(prepare_wav_tensor(wav))
-        except RuntimeError:
-            continue
+        waves.append(prepare_wav_tensor(wav))
     if not waves:
-        raise RuntimeError("推理没有返回有效音频（时长为 0）。")
+        raise RuntimeError(
+            "推理没有返回有效音频（时长为 0）。"
+            "多半是 LLM 立刻 EOS：请确认未把 talker 转成 fp16，且 prompt 含 <|endofprompt|>。"
+        )
     return torch.cat(waves, dim=-1)
 
 
@@ -217,13 +308,16 @@ def run_clone(args: argparse.Namespace) -> Path:
 
     prompt_text = wrap_prompt_text(prompt_raw)
     tts_text = args.text.strip()
+    warn = prompt_length_warning(tts_text, prompt_raw)
+    if warn:
+        print(f"[warn] {warn}")
     print(f"prompt_text: {prompt_text}")
     print(f"tts_text   : {tts_text}")
 
     t1 = time.time()
     chunks = []
     if args.instruct:
-        instruct = wrap_prompt_text(args.instruct)
+        instruct = wrap_instruct_text(args.instruct)
         for item in cosyvoice.inference_instruct2(
             tts_text,
             instruct,
@@ -254,6 +348,22 @@ def run_clone(args: argparse.Namespace) -> Path:
     duration = speech.shape[-1] / cosyvoice.sample_rate
     print(f"已保存: {out_path}")
     print(f"音频时长 {duration:.2f}s，合成用时 {elapsed:.2f}s，RTF={elapsed / max(duration, 1e-6):.3f}")
+
+    if getattr(args, "with_qwen", False):
+        from qwen3_tts import qwen_voice_clone
+
+        qwen_name = Path(args.out_name).stem + "_qwen3.wav"
+        qwen_path = out_dir / qwen_name
+        tq = time.time()
+        qwen_wav, qwen_sr = qwen_voice_clone(tts_text, str(prompt_wav), prompt_raw)
+        torchaudio.save(str(qwen_path), qwen_wav.contiguous(), qwen_sr)
+        q_elapsed = time.time() - tq
+        q_dur = qwen_wav.shape[-1] / qwen_sr
+        print(f"已保存 Qwen3-TTS: {qwen_path}")
+        print(
+            f"Qwen3 时长 {q_dur:.2f}s，合成用时 {q_elapsed:.2f}s，RTF={q_elapsed / max(q_dur, 1e-6):.3f}"
+        )
+
     return out_path
 
 
@@ -277,6 +387,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--use-base", dest="use_rl", action="store_false", help="改用 llm.pt（非 RL）")
     parser.add_argument("--fp16", action="store_true", help="仅在显存足够的 GPU 上建议开启")
     parser.add_argument("--force-gpu", action="store_true")
+    parser.add_argument(
+        "--with-qwen",
+        action="store_true",
+        help="额外用 Qwen3-TTS-12Hz-0.6B-Base 克隆同一参考音",
+    )
     return parser
 
 

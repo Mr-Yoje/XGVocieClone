@@ -15,22 +15,32 @@ from demo_clone import (
     apply_llm_weights,
     concatenate_speech,
     llm_checkpoint_path,
+    load_independent_cosyvoices,
     maybe_force_cpu,
+    prompt_length_warning,
     reset_runtime_state,
     resolve_default_prompt,
+    wrap_instruct_text,
     wrap_prompt_text,
 )
 
 
 DEFAULT_TEXT = "你好，这是一次 Fun-CosyVoice 3 零样本声音克隆测试。希望你能听出和参考音频相近的音色。"
 MODE_TTS = "纯文本 TTS（默认音色）"
-MODE_COMPARE = "克隆：对比 RL 与基座"
+MODE_COMPARE = "克隆：对比 RL / 基座 / Qwen3"
 MODE_RL = "克隆：仅 RL"
 MODE_BASE = "克隆：仅基座"
 
 
 class CloneEngine:
-    def __init__(self, cosyvoice_root: Path, model_dir: Path, fp16: bool, force_gpu: bool):
+    def __init__(
+        self,
+        cosyvoice_root: Path,
+        model_dir: Path,
+        fp16: bool,
+        force_gpu: bool,
+        shared_talker: bool = False,
+    ):
         add_cosyvoice_to_path(cosyvoice_root)
         maybe_force_cpu(force_gpu)
         from cosyvoice.cli.cosyvoice import AutoModel
@@ -43,33 +53,43 @@ class CloneEngine:
         self.rl_ckpt = llm_checkpoint_path(model_dir, "rl")
         print(f"加载模型: {model_dir}")
         t0 = time.time()
-        self.model = AutoModel(model_dir=str(model_dir), load_trt=False, fp16=fp16)
-        # AutoModel 默认 llm.pt；立刻灌入 RL，避免第一次「仅 RL」仍走基座缓存
-        apply_llm_weights(self.model, self.rl_ckpt, label="RL")
-        self.active = "rl"
-        print(f"模型就绪 {time.time() - t0:.1f}s（当前 talker=RL）")
+        self.models, self.shared_talker = load_independent_cosyvoices(
+            model_dir,
+            fp16,
+            shared_talker=shared_talker,
+            AutoModel=AutoModel,
+            rl_ckpt=self.rl_ckpt,
+        )
+        self.active = "base"
+        print(f"模型就绪 {time.time() - t0:.1f}s（独立实例={not self.shared_talker}）")
 
-    def switch_talker(self, variant: str) -> None:
-        if variant == self.active:
-            reset_runtime_state(self.model)
-            return
-        path = self.rl_ckpt if variant == "rl" else self.base_ckpt
-        apply_llm_weights(self.model, path, label="RL" if variant == "rl" else "基座")
-        self.active = variant
+    def _prepare_talker(self, variant: str):
+        model = self.models[variant]
+        if self.shared_talker:
+            if variant != self.active:
+                path = self.rl_ckpt if variant == "rl" else self.base_ckpt
+                apply_llm_weights(model, path, label="RL" if variant == "rl" else "基座")
+                self.active = variant
+            else:
+                reset_runtime_state(model)
+            return model
+        reset_runtime_state(model)
+        return model
 
-    def _infer(self, prompt_wav: str, prompt_text: str, tts_text: str, instruct: str, speed: float):
+    def _infer(self, variant: str, prompt_wav: str, prompt_text: str, tts_text: str, instruct: str, speed: float):
+        model = self._prepare_talker(variant)
         chunks = []
         if instruct and instruct.strip():
-            for item in self.model.inference_instruct2(
+            for item in model.inference_instruct2(
                 tts_text.strip(),
-                wrap_prompt_text(instruct.strip()),
+                wrap_instruct_text(instruct.strip()),
                 prompt_wav,
                 stream=False,
                 speed=float(speed),
             ):
                 chunks.append(item)
         else:
-            for item in self.model.inference_zero_shot(
+            for item in model.inference_zero_shot(
                 tts_text.strip(),
                 wrap_prompt_text(prompt_text),
                 prompt_wav,
@@ -81,21 +101,27 @@ class CloneEngine:
             raise RuntimeError("推理没有返回音频。")
         return concatenate_speech(chunks)
 
-    def _save(self, speech, tag: str) -> tuple[str, float]:
+    def _save(self, speech, tag: str, sample_rate: int | None = None) -> tuple[str, float]:
         import torchaudio
 
-        dur = speech.shape[-1] / self.model.sample_rate
+        sr = int(sample_rate or self.models["base"].sample_rate)
+        dur = speech.shape[-1] / sr
         stamp = int(time.time() * 1000)
         tmp = Path(tempfile.gettempdir()) / f"cosyvoice3_{tag}_{stamp}.wav"
         out_dir = Path(__file__).resolve().parent / "outputs"
         out_dir.mkdir(parents=True, exist_ok=True)
         persistent = out_dir / f"{tag}_{stamp}.wav"
-        torchaudio.save(str(tmp), speech.contiguous(), self.model.sample_rate)
-        torchaudio.save(str(persistent), speech.contiguous(), self.model.sample_rate)
+        torchaudio.save(str(tmp), speech.contiguous(), sr)
+        torchaudio.save(str(persistent), speech.contiguous(), sr)
         print(f"保存 {tag}: shape={tuple(speech.shape)} dur={dur:.3f}s path={persistent}")
         return str(tmp), dur
 
-    def synthesize(self, prompt_audio, prompt_text: str, tts_text: str, instruct: str, speed: float, mode: str):
+    def _infer_qwen(self, prompt_wav: str, prompt_text: str, tts_text: str):
+        from qwen3_tts import qwen_voice_clone
+
+        return qwen_voice_clone(tts_text, prompt_wav, prompt_text)
+
+    def synthesize(self, prompt_audio, prompt_text: str, tts_text: str, instruct: str, speed: float, mode: str, with_qwen: bool):
         if not tts_text or not tts_text.strip():
             raise ValueError("请填写要合成的文本。")
 
@@ -116,37 +142,55 @@ class CloneEngine:
         lines = []
         rl_path = None
         base_path = None
+        qwen_path = None
 
         if tts_only:
             lines.append(f"纯文本 TTS，默认音色：{prompt_wav}")
+        warn = prompt_length_warning(tts_text, prompt_raw)
+        if warn:
+            lines.append(warn)
 
-        # 先跑 RL 再跑基座，避免「第二次推理」才切 RL 时沿用基座解码缓存出 0 秒音频
-        if want_rl:
-            self.switch_talker("rl")
-            t0 = time.time()
-            speech = self._infer(prompt_wav, prompt_raw, tts_text, instruct, speed)
-            rl_path, dur = self._save(speech, "rl")
-            elapsed = time.time() - t0
-            lines.append(
-                f"RL llm.rl.pt：时长 {dur:.2f}s · 用时 {elapsed:.2f}s · RTF {elapsed / max(dur, 1e-6):.3f}"
-            )
+        if self.shared_talker:
+            lines.append("显存不足或指定了 --shared-talker：基座与 RL 共用引擎并切换权重。")
+        else:
+            lines.append("基座与 RL 为两套独立 CosyVoice（同一输入，各自推理、各自输出）。")
 
         if want_base:
-            self.switch_talker("base")
             t0 = time.time()
-            speech = self._infer(prompt_wav, prompt_raw, tts_text, instruct, speed)
+            speech = self._infer("base", prompt_wav, prompt_raw, tts_text, instruct, speed)
             base_path, dur = self._save(speech, "base")
             elapsed = time.time() - t0
             lines.append(
-                f"基座 llm.pt：时长 {dur:.2f}s · 用时 {elapsed:.2f}s · RTF {elapsed / max(dur, 1e-6):.3f}"
+                f"CosyVoice 基座：时长 {dur:.2f}s · 用时 {elapsed:.2f}s · RTF {elapsed / max(dur, 1e-6):.3f}"
             )
 
-        if mode == MODE_COMPARE:
-            lines.append("同一参考音、同一文本，请左右试听对比音色与清晰度。")
-        if tts_only:
-            lines.append("未使用上传的参考音；这是官方默认音色的纯文本合成。")
+        if want_rl:
+            t0 = time.time()
+            speech = self._infer("rl", prompt_wav, prompt_raw, tts_text, instruct, speed)
+            rl_path, dur = self._save(speech, "rl")
+            elapsed = time.time() - t0
+            lines.append(
+                f"CosyVoice RL：时长 {dur:.2f}s · 用时 {elapsed:.2f}s · RTF {elapsed / max(dur, 1e-6):.3f}"
+            )
 
-        return rl_path, base_path, "\n".join(lines)
+        if with_qwen:
+            try:
+                t0 = time.time()
+                speech, sr = self._infer_qwen(str(prompt_wav), prompt_raw, tts_text)
+                qwen_path, dur = self._save(speech, "qwen3_0.6b", sample_rate=sr)
+                elapsed = time.time() - t0
+                lines.append(
+                    f"Qwen3-TTS-0.6B-Base：时长 {dur:.2f}s · 用时 {elapsed:.2f}s · RTF {elapsed / max(dur, 1e-6):.3f}"
+                )
+            except Exception as exc:  # noqa: BLE001
+                lines.append(f"Qwen3-TTS-0.6B 失败：{exc}")
+
+        if mode == MODE_COMPARE:
+            lines.append("同一参考音、同一文本，请试听对比音色与清晰度。")
+        if tts_only:
+            lines.append("未使用上传的参考音；CosyVoice 用官方默认音色，Qwen3-TTS 克隆同一段默认参考音。")
+
+        return rl_path, base_path, qwen_path, "\n".join(lines)
 
 
 def main() -> None:
@@ -159,6 +203,12 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument("--server-name", default="127.0.0.1", help="监听地址，局域网访问可用 0.0.0.0")
     parser.add_argument("--share", action="store_true")
+    parser.add_argument("--no-qwen", action="store_true", help="不加载、不对比 Qwen3-TTS-0.6B")
+    parser.add_argument(
+        "--shared-talker",
+        action="store_true",
+        help="基座与 RL 共用一份 CosyVoice（省显存，会切换权重）",
+    )
     args = parser.parse_args()
 
     import gradio as gr
@@ -168,13 +218,15 @@ def main() -> None:
         Path(args.model_dir).resolve(),
         fp16=args.fp16,
         force_gpu=args.force_gpu,
+        shared_talker=args.shared_talker,
     )
 
-    with gr.Blocks(title="CosyVoice 3-0.5B 声音克隆对比") as demo:
+    with gr.Blocks(title="CosyVoice 3 / Qwen3-TTS 声音对比") as demo:
         gr.Markdown(
-            "## CosyVoice 3-0.5B\n"
-            "- **纯文本 TTS**：不需要参考音，用官方默认音色朗读你输入的句子，并对比 RL / 基座。\n"
-            "- **克隆**：上传 3–10 秒参考音频并填写转写，再输入要说的新文本。"
+            "## CosyVoice 3-0.5B 与 Qwen3-TTS-0.6B\n"
+            "- **纯文本 TTS**：不需要参考音；CosyVoice 用官方默认音色，Qwen3-TTS 克隆同一段默认参考音。\n"
+            "- **克隆**：上传 3–10 秒参考音频并填写转写，再输入要说的新文本。\n"
+            "- **基座 / RL**：同一参考音和同一句文本，两套独立 CosyVoice 分别推理，两路独立输出。"
         )
         with gr.Row():
             prompt_audio = gr.Audio(sources=["upload", "microphone"], type="filepath", label="参考音频")
@@ -195,18 +247,23 @@ def main() -> None:
                     value=MODE_TTS,
                     label="生成模式",
                 )
+                with_qwen = gr.Checkbox(
+                    value=not args.no_qwen,
+                    label="同时对比 Qwen3-TTS-12Hz-0.6B-Base（首次会下载权重，显存紧张可关掉）",
+                )
                 run_btn = gr.Button("开始生成 / 对比", variant="primary")
 
         gr.Markdown("### 试听对比")
         with gr.Row():
-            output_rl = gr.Audio(label="RL（llm.rl.pt）", type="filepath")
-            output_base = gr.Audio(label="非 RL 基座（llm.pt）", type="filepath")
-        info = gr.Textbox(label="状态", interactive=False, lines=4)
+            output_rl = gr.Audio(label="CosyVoice RL（llm.rl.pt）", type="filepath")
+            output_base = gr.Audio(label="CosyVoice 基座（llm.pt）", type="filepath")
+            output_qwen = gr.Audio(label="Qwen3-TTS-0.6B-Base", type="filepath")
+        info = gr.Textbox(label="状态", interactive=False, lines=6)
 
         run_btn.click(
             engine.synthesize,
-            inputs=[prompt_audio, prompt_text, tts_text, instruct, speed, mode],
-            outputs=[output_rl, output_base, info],
+            inputs=[prompt_audio, prompt_text, tts_text, instruct, speed, mode, with_qwen],
+            outputs=[output_rl, output_base, output_qwen, info],
         )
 
     demo.queue().launch(server_name=args.server_name, server_port=args.port, share=args.share)

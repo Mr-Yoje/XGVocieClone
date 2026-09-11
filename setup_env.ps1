@@ -27,7 +27,7 @@ if (-not $conda) {
 conda create -n cosyvoice -y python=3.10
 conda run -n cosyvoice python -m pip install -U pip
 conda run -n cosyvoice python -m pip install -r (Join-Path $CosyDir "requirements.txt") -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com
-conda run -n cosyvoice python -m pip install modelscope huggingface_hub gradio torchaudio
+conda run -n cosyvoice python -m pip install modelscope huggingface_hub gradio torchaudio qwen-tts
 
 Write-Host ""
 Write-Host "环境已创建。下一步："

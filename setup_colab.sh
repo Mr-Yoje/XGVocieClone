@@ -94,6 +94,7 @@ if not installed("onnxruntime"):
 PY
 
 python -m pip install --prefer-binary modelscope huggingface_hub gradio HyperPyYAML wetext WeTextProcessing inflect
+python -m pip install --prefer-binary -U qwen-tts
 
 if [[ ! -f "${MODEL_DIR}/llm.rl.pt" ]]; then
   log "下载 Fun-CosyVoice3-0.5B-2512（含 llm.rl.pt），约 7GB+"
