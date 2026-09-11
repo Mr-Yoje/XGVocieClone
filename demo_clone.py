@@ -123,39 +123,82 @@ def reset_runtime_state(cosyvoice) -> None:
             cache.clear()
 
 
+def quiet_flash_attn_notice() -> None:
+    """CosyVoice/Qwen print a flash-attn warning; Colab Py3.13 usually cannot install it."""
+    import builtins
+
+    if getattr(builtins.print, "_xg_flash_filter", False):
+        return
+    orig = builtins.print
+    state = {"held": [], "said": False}
+
+    def filtered(*args, **kwargs):
+        text = " ".join(str(a) for a in args)
+        stripped = text.strip()
+        if stripped and set(stripped) <= {"*"}:
+            state["held"].append((args, kwargs))
+            return
+        if "flash-attn is not installed" in text:
+            state["held"].clear()
+            if not state["said"]:
+                state["said"] = True
+                orig("未安装 flash-attn，已用 PyTorch 注意力（Colab 上一般装不上）。不影响合成结果。", **kwargs)
+            return
+        for held_args, held_kwargs in state["held"]:
+            orig(*held_args, **held_kwargs)
+        state["held"].clear()
+        orig(*args, **kwargs)
+
+    filtered._xg_flash_filter = True  # type: ignore[attr-defined]
+    builtins.print = filtered
+
+
 def load_cosyvoice(model_dir: Path, fp16: bool, *, AutoModel=None):
     """Official AutoModel: Fun-CosyVoice3-0.5B-2512 llm.pt only."""
     if AutoModel is None:
         from cosyvoice.cli.cosyvoice import AutoModel as AutoModel
 
+    quiet_flash_attn_notice()
     model_dir = Path(model_dir)
     print(f"加载 Fun-CosyVoice3-0.5B-2512（官方 AutoModel / llm.pt）: {model_dir}")
     return AutoModel(model_dir=str(model_dir), load_trt=False, fp16=fp16)
 
 
-def prepare_wav_tensor(speech):
-    """Return CPU float32 [channel, time]. CosyVoice chunks are usually [1, T]; [T, 1] would look like 0s."""
-    t = speech.detach().cpu().float().contiguous()
-    if t.numel() == 0:
-        raise RuntimeError("推理返回了空张量（0 个采样）。")
-    t = t.squeeze()
-    if t.ndim == 0:
-        raise RuntimeError("推理返回了标量，没有音频。")
-    if t.ndim == 1:
-        t = t.unsqueeze(0)
-    elif t.ndim >= 3:
-        t = t.reshape(1, -1)
-    elif t.shape[0] > 8 and t.shape[0] > t.shape[1]:
-        t = t.transpose(0, 1).contiguous()
-    if t.shape[-1] < 2400:
-        raise RuntimeError(
-            f"合成音频过短（{t.shape[-1]} 采样，shape={tuple(t.shape)}），"
-            "多半是 talker 立刻 EOS。请用官方 AutoModel 加载 llm.pt，且不要把 LLM 转成 fp16。"
+PROMPT_WAV_SR = 16000
+
+
+def prepare_prompt_wav(wav_path: str | Path) -> str:
+    """Match Fun-CosyVoice3 Space: 16 kHz, trim, peak-normalize, 0.2s pad."""
+    import tempfile
+
+    import torch
+    import torchaudio
+    from cosyvoice.utils.file_utils import load_wav
+
+    speech = load_wav(str(wav_path), target_sr=PROMPT_WAV_SR, min_sr=16000)
+    try:
+        import librosa
+
+        trimmed, _ = librosa.effects.trim(
+            speech.numpy().squeeze(),
+            top_db=60,
+            frame_length=440,
+            hop_length=220,
         )
-    return t
+        speech = torch.from_numpy(trimmed).float().unsqueeze(0)
+    except Exception:
+        pass
+    peak = float(speech.abs().max())
+    if peak > 0.9:
+        speech = speech / peak * 0.9
+    speech = torch.cat([speech, torch.zeros(1, int(PROMPT_WAV_SR * 0.2))], dim=1)
+    tmp = Path(tempfile.gettempdir()) / f"cosyvoice3_prompt_{os.getpid()}.wav"
+    torchaudio.save(str(tmp), speech.contiguous(), PROMPT_WAV_SR)
+    return str(tmp)
 
 
 def concatenate_speech(chunks: list):
+    """Official example/Space: torch.concat(tts_speech, dim=1)."""
     import torch
 
     waves = []
@@ -163,13 +206,16 @@ def concatenate_speech(chunks: list):
         wav = chunk.get("tts_speech") if isinstance(chunk, dict) else chunk
         if wav is None:
             continue
-        waves.append(prepare_wav_tensor(wav))
+        t = wav.detach().cpu().float().contiguous()
+        if t.ndim == 1:
+            t = t.unsqueeze(0)
+        waves.append(t)
     if not waves:
         raise RuntimeError(
             "推理没有返回有效音频（时长为 0）。"
-            "多半是 LLM 立刻 EOS：请确认未把 talker 转成 fp16，且 prompt 含 <|endofprompt|>。"
+            "请确认 prompt 含 <|endofprompt|>，且未把 LLM 整模转成 half。"
         )
-    return torch.cat(waves, dim=-1)
+    return torch.cat(waves, dim=1)
 
 
 def run_clone(args: argparse.Namespace) -> Path:
@@ -207,6 +253,7 @@ def run_clone(args: argparse.Namespace) -> Path:
         print(f"[warn] {warn}")
     print(f"prompt_text: {prompt_text}")
     print(f"tts_text   : {tts_text}")
+    prompt_wav = prepare_prompt_wav(prompt_wav)
 
     t1 = time.time()
     chunks = []

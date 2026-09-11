@@ -77,6 +77,12 @@ def get_qwen_model(model_id: str = QWEN_MODEL_ID):
         raise RuntimeError(_LOAD_ERROR)
     _patch_check_model_inputs()
     try:
+        from demo_clone import quiet_flash_attn_notice
+
+        quiet_flash_attn_notice()
+    except Exception:
+        pass
+    try:
         from qwen_tts import Qwen3TTSModel
     except ImportError as exc:
         _LOAD_ERROR = "未安装 qwen-tts。请执行: pip install -U qwen-tts"
@@ -91,7 +97,7 @@ def get_qwen_model(model_id: str = QWEN_MODEL_ID):
     print(f"[qwen3-tts] 加载 {source} device={device} dtype={dtype}")
 
     last_err = None
-    for attn in ("sdpa", "eager", "flash_attention_2"):
+    for attn in ("sdpa", "eager"):
         try:
             kwargs = dict(device_map=device, dtype=dtype)
             if attn:
