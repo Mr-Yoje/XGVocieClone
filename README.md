@@ -21,7 +21,7 @@
 
 1. 打开上面的徽章（或手动打开 [`colab_clone.ipynb`](https://colab.research.google.com/github/Mr-Yoje/XGVocieClone/blob/main/colab_clone.ipynb)）。
 2. **代码执行程序 → 更改运行时类型 → T4 GPU**。
-3. 依次运行单元格。启动格会拉起 WebUI，**日志同时打在该格输出和 `outputs/webui.log`**。出现 Gradio 公网链接即可试用。中断启动格只停止看日志；真正退出请运行 **「停止 / 退出 WebUI」**（`bash colab_webui.sh stop`）。
+3. 依次运行单元格。启动格会**先出网页地址**（模型等第一次点生成再加载）。日志同时打在该格输出和 `outputs/webui.log`。若没有 `*.gradio.live`，再跑 **Colab 端口转发** 格。中断启动格只停止看日志；真正退出请运行 **「停止 / 退出 WebUI」**。
 
 Colab 使用预装的 CUDA PyTorch，不走 conda。脚本见 `setup_colab.sh`。
 

@@ -44,25 +44,35 @@ class CloneEngine:
     ):
         add_cosyvoice_to_path(cosyvoice_root)
         maybe_force_cpu(force_gpu)
-        from cosyvoice.cli.cosyvoice import AutoModel
-
         if not (model_dir / "cosyvoice3.yaml").exists():
             raise FileNotFoundError(f"模型目录无效: {model_dir}")
         self.cosyvoice_root = cosyvoice_root
         self.model_dir = model_dir
+        self.fp16 = fp16
+        self.want_shared = shared_talker
+        self.shared_talker = shared_talker
         self.base_ckpt = llm_checkpoint_path(model_dir, "base")
         self.rl_ckpt = llm_checkpoint_path(model_dir, "rl")
-        print(f"加载模型: {model_dir}")
+        self.models = None
+        self.active = "base"
+        print("先启动网页；CosyVoice 权重在首次点「生成」时再加载。", flush=True)
+
+    def _ensure_loaded(self) -> None:
+        if self.models is not None:
+            return
+        from cosyvoice.cli.cosyvoice import AutoModel
+
+        print(f"加载模型: {self.model_dir}", flush=True)
         t0 = time.time()
         self.models, self.shared_talker = load_independent_cosyvoices(
-            model_dir,
-            fp16,
-            shared_talker=shared_talker,
+            self.model_dir,
+            self.fp16,
+            shared_talker=self.want_shared,
             AutoModel=AutoModel,
             rl_ckpt=self.rl_ckpt,
         )
         self.active = "base"
-        print(f"模型就绪 {time.time() - t0:.1f}s（独立实例={not self.shared_talker}）")
+        print(f"模型就绪 {time.time() - t0:.1f}s（独立实例={not self.shared_talker}）", flush=True)
 
     def _prepare_talker(self, variant: str):
         model = self.models[variant]
@@ -125,6 +135,7 @@ class CloneEngine:
     def synthesize(self, prompt_audio, prompt_text: str, tts_text: str, instruct: str, speed: float, mode: str, with_qwen: bool):
         if not tts_text or not tts_text.strip():
             raise ValueError("请填写要合成的文本。")
+        self._ensure_loaded()
 
         tts_only = mode == MODE_TTS
         if tts_only:
@@ -227,7 +238,8 @@ def main() -> None:
             "## CosyVoice 3-0.5B 与 Qwen3-TTS-0.6B\n"
             "- **纯文本 TTS**：不需要参考音；CosyVoice 用官方默认音色，Qwen3-TTS 克隆同一段默认参考音。\n"
             "- **克隆**：上传 3–10 秒参考音频并填写转写，再输入要说的新文本。\n"
-            "- **基座 / RL**：同一参考音和同一句文本，两套独立 CosyVoice 分别推理，两路独立输出。"
+            "- **基座 / RL**：同一参考音和同一句文本，两套独立 CosyVoice 分别推理，两路独立输出。\n"
+            "- 页面会马上打开；**第一次点生成**才会加载模型（可能要几分钟）。"
         )
         with gr.Row():
             prompt_audio = gr.Audio(sources=["upload", "microphone"], type="filepath", label="参考音频")
@@ -279,8 +291,41 @@ def main() -> None:
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _on_signal)
 
+    print("=" * 64, flush=True)
+    print(f"监听地址: http://{args.server_name}:{args.port}", flush=True)
+    print(f"本机打开: http://127.0.0.1:{args.port}", flush=True)
+    if args.share:
+        print("正在申请 Gradio 公网链接（*.gradio.live），请等十几秒…", flush=True)
+        print("若一直没有 live 链接：Colab 可用端口转发，见笔记本说明。", flush=True)
+    print("=" * 64, flush=True)
+
+    import threading
+
+    def _colab_port_hint() -> None:
+        time.sleep(2)
+        try:
+            from google.colab import output  # type: ignore
+
+            print(
+                f"Colab 端口转发（不依赖 gradio.live）: 见下方窗口，或新单元格运行\n"
+                f"  from google.colab import output\n"
+                f"  output.serve_kernel_port_as_window({args.port})",
+                flush=True,
+            )
+            output.serve_kernel_port_as_window(args.port)
+        except Exception:
+            pass
+
+    threading.Thread(target=_colab_port_hint, daemon=True).start()
+
     try:
-        demo.queue().launch(server_name=args.server_name, server_port=args.port, share=args.share)
+        demo.queue().launch(
+            server_name=args.server_name,
+            server_port=args.port,
+            share=args.share,
+            show_error=True,
+            quiet=False,
+        )
     except KeyboardInterrupt:
         print("\nKeyboardInterrupt，正在关闭…", flush=True)
         try:
