@@ -127,6 +127,31 @@ _COSYVOICE = None
 _COSYVOICE_KEY = None
 
 
+def force_cosyvoice_float32(cosyvoice) -> None:
+    """Colab/new torch often loads the Qwen2 talker in bfloat16 while prompt embeds stay float32."""
+    import torch
+
+    m = getattr(cosyvoice, "model", None)
+    if m is None:
+        return
+    converted = []
+    for name in ("llm", "flow", "hift"):
+        mod = getattr(m, name, None)
+        if mod is None:
+            continue
+        try:
+            device = next(mod.parameters()).device
+        except StopIteration:
+            continue
+        try:
+            mod.to(device=device, dtype=torch.float32)
+            converted.append(name)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[warn] {name} 转 float32 失败: {exc}", flush=True)
+    if converted:
+        print(f"已将 {', '.join(converted)} 转为 float32（避免 Float vs BFloat16）", flush=True)
+
+
 def load_cosyvoice(model_dir: Path, fp16: bool, *, AutoModel=None):
     """Official AutoModel: Fun-CosyVoice3-0.5B-2512 llm.pt only."""
     global _COSYVOICE, _COSYVOICE_KEY
@@ -140,9 +165,13 @@ def load_cosyvoice(model_dir: Path, fp16: bool, *, AutoModel=None):
         print("复用已加载的 Fun-CosyVoice3-0.5B-2512", flush=True)
         return _COSYVOICE
 
+    import torch
+
+    torch.set_default_dtype(torch.float32)
     print(f"加载 Fun-CosyVoice3-0.5B-2512（官方 AutoModel / llm.pt）: {model_dir}", flush=True)
     model = AutoModel(model_dir=str(model_dir), load_trt=False, fp16=fp16)
     if not injected:
+        force_cosyvoice_float32(model)
         _COSYVOICE = model
         _COSYVOICE_KEY = key
     return model
