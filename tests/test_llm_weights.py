@@ -84,47 +84,56 @@ class PromptWrapTest(unittest.TestCase):
 
 
 class IndependentModelsTest(unittest.TestCase):
+    def _fake_model_dir(self):
+        import tempfile
+
+        td = Path(tempfile.mkdtemp())
+        (td / "llm.pt").write_bytes(b"base")
+        (td / "llm.rl.pt").write_bytes(b"rl")
+        (td / "cosyvoice3.yaml").write_text("x", encoding="utf-8")
+        return td
+
     def test_loads_two_separate_cosyvoice_instances(self):
         from demo_clone import load_independent_cosyvoices
 
+        td = self._fake_model_dir()
         created = []
+        dirs = []
 
         def fake_auto_model(**kwargs):
             obj = object()
             created.append(obj)
+            dirs.append(Path(kwargs["model_dir"]))
             return obj
 
-        applied = []
-
-        def fake_apply_rl(model, path, label=""):
-            applied.append((model, str(path), label))
-
         models, shared = load_independent_cosyvoices(
-            Path("pretrained_models/Fun-CosyVoice3-0.5B"),
+            td,
             fp16=True,
             AutoModel=fake_auto_model,
-            apply_rl=fake_apply_rl,
-            rl_ckpt=Path("llm.rl.pt"),
+            apply_rl=lambda *a, **k: self.fail("RL 应走官方 llm.pt 加载，不应再灌权重"),
+            rl_ckpt=td / "llm.rl.pt",
         )
         self.assertFalse(shared)
         self.assertEqual(len(created), 2)
         self.assertIsNot(models["base"], models["rl"])
-        self.assertIs(applied[0][0], models["rl"])
-        self.assertEqual(applied[0][2], "RL")
+        self.assertEqual(dirs[0].resolve(), td.resolve())
+        self.assertEqual((dirs[1] / "llm.pt").read_bytes(), b"rl")
 
     def test_shared_talker_reuses_one_instance(self):
         from demo_clone import load_independent_cosyvoices
+
+        td = self._fake_model_dir()
 
         def fake_auto_model(**kwargs):
             return object()
 
         models, shared = load_independent_cosyvoices(
-            Path("m"),
+            td,
             fp16=False,
             shared_talker=True,
             AutoModel=fake_auto_model,
             apply_rl=lambda *a, **k: self.fail("should not apply RL at load"),
-            rl_ckpt=Path("llm.rl.pt"),
+            rl_ckpt=td / "llm.rl.pt",
         )
         self.assertTrue(shared)
         self.assertIs(models["base"], models["rl"])

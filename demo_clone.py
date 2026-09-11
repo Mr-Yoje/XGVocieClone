@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -196,6 +197,41 @@ def _is_oom(exc: BaseException) -> bool:
     return "out of memory" in str(exc).lower()
 
 
+def _link_or_copy(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists() or dest.is_symlink():
+        return
+    try:
+        dest.symlink_to(src, target_is_directory=src.is_dir())
+    except OSError:
+        if src.is_dir():
+            shutil.copytree(src, dest)
+        else:
+            shutil.copy2(src, dest)
+
+
+def prepare_official_llm_dir(model_dir: Path, llm_ckpt: Path) -> Path:
+    """Directory whose llm.pt is the given checkpoint, so AutoModel.load uses official strict=True.
+
+    Overlaying llm.rl.pt onto an already-constructed llm.pt instance often makes RL EOS immediately.
+    """
+    model_dir = Path(model_dir).resolve()
+    llm_ckpt = Path(llm_ckpt).resolve()
+    if llm_ckpt == model_dir / "llm.pt":
+        return model_dir
+    shadow = model_dir.parent / f".cosyvoice_llm_{llm_ckpt.stem}"
+    shadow.mkdir(parents=True, exist_ok=True)
+    for item in model_dir.iterdir():
+        if item.name == "llm.pt":
+            continue
+        _link_or_copy(item, shadow / item.name)
+    dest_llm = shadow / "llm.pt"
+    if dest_llm.exists() or dest_llm.is_symlink():
+        dest_llm.unlink()
+    _link_or_copy(llm_ckpt, dest_llm)
+    return shadow
+
+
 def load_independent_cosyvoices(
     model_dir: Path,
     fp16: bool,
@@ -215,24 +251,24 @@ def load_independent_cosyvoices(
     apply_rl = apply_rl or apply_llm_weights
     model_dir = Path(model_dir)
     rl_ckpt = Path(rl_ckpt) if rl_ckpt is not None else llm_checkpoint_path(model_dir, "rl")
-    kwargs = dict(model_dir=str(model_dir), load_trt=False, fp16=fp16)
     print("加载 CosyVoice 基座（llm.pt）")
-    base = AutoModel(**kwargs)
+    base = AutoModel(model_dir=str(model_dir), load_trt=False, fp16=fp16)
     if shared_talker:
         print("shared_talker：基座与 RL 共用一份引擎，推理时切换权重")
         return {"base": base, "rl": base}, True
-    print("再加载一份 CosyVoice，并单独灌入 llm.rl.pt")
+    rl_dir = prepare_official_llm_dir(model_dir, rl_ckpt)
+    print(f"再加载一份 CosyVoice，官方路径读取 RL：{rl_dir / 'llm.pt'} -> {rl_ckpt}")
     try:
-        rl = AutoModel(**kwargs)
+        rl = AutoModel(model_dir=str(rl_dir), load_trt=False, fp16=fp16)
     except Exception as exc:  # noqa: BLE001
         if not _is_oom(exc):
             raise
         print(f"[warn] 第二份 CosyVoice 显存不足，回退共用引擎: {exc}")
+        apply_rl(base, rl_ckpt, label="RL")
         return {"base": base, "rl": base}, True
-    apply_rl(rl, rl_ckpt, label="RL")
     if rl is base:
         raise RuntimeError("RL 与基座必须是两个独立实例")
-    print("基座与 RL 已独立加载，之后不再互相覆盖权重")
+    print("基座与 RL 已独立加载（各自走官方 llm.pt 加载），之后不再互相覆盖权重")
     return {"base": base, "rl": rl}, False
 
 
@@ -250,10 +286,10 @@ def prepare_wav_tensor(speech):
         t = t.reshape(1, -1)
     elif t.shape[0] > 8 and t.shape[0] > t.shape[1]:
         t = t.transpose(0, 1).contiguous()
-    if t.shape[-1] < 400:
+    if t.shape[-1] < 2400:
         raise RuntimeError(
             f"合成音频过短（{t.shape[-1]} 采样，shape={tuple(t.shape)}），"
-            "多半是 talker 权重切换后缓存未清或采样点被当成声道。"
+            "多半是 talker 立刻 EOS。RL 必须用官方方式加载 llm.rl.pt，且不要把 LLM 转成 fp16。"
         )
     return t
 

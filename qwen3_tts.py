@@ -35,12 +35,47 @@ def _pick_dtype():
     return torch.float32
 
 
+def _patch_check_model_inputs() -> None:
+    """qwen-tts uses @check_model_inputs(); transformers 4.57 expects @check_model_inputs."""
+    try:
+        import transformers.utils.generic as generic
+    except Exception:
+        return
+    orig = getattr(generic, "check_model_inputs", None)
+    if orig is None or getattr(orig, "_xg_compat", False):
+        return
+
+    def check_model_inputs(func=None, *args, **kwargs):
+        if func is None:
+
+            def decorator(inner):
+                try:
+                    return orig(inner, *args, **kwargs)
+                except TypeError:
+                    wrapped = orig(*args, **kwargs)
+                    return wrapped(inner) if callable(wrapped) else inner
+
+            return decorator
+        return orig(func, *args, **kwargs)
+
+    check_model_inputs._xg_compat = True  # type: ignore[attr-defined]
+    generic.check_model_inputs = check_model_inputs
+    try:
+        import transformers.utils as utils
+
+        if getattr(utils, "check_model_inputs", None) is orig:
+            utils.check_model_inputs = check_model_inputs
+    except Exception:
+        pass
+
+
 def get_qwen_model(model_id: str = QWEN_MODEL_ID):
     global _MODEL, _LOAD_ERROR
     if _MODEL is not None:
         return _MODEL
     if _LOAD_ERROR:
         raise RuntimeError(_LOAD_ERROR)
+    _patch_check_model_inputs()
     try:
         import torch
         from qwen_tts import Qwen3TTSModel
@@ -77,6 +112,7 @@ def qwen_voice_clone(text: str, ref_audio: str, ref_text: str):
     import numpy as np
     import torch
 
+    _patch_check_model_inputs()
     model = get_qwen_model()
     wavs, sr = model.generate_voice_clone(
         text=text.strip(),
