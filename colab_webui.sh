@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Colab / 云端：后台启动、查看日志、优雅停止 WebUI。
 # 用法（在仓库根目录）:
-#   bash colab_webui.sh start
+#   bash colab_webui.sh start           # 后台跑，并把日志打到当前终端
+#   bash colab_webui.sh start --no-follow
 #   bash colab_webui.sh logs
+#   bash colab_webui.sh follow
 #   bash colab_webui.sh status
 #   bash colab_webui.sh stop
 set -euo pipefail
@@ -37,25 +39,52 @@ cmd_status() {
 }
 
 cmd_start() {
-  local pid
+  local pid follow="${WEBUI_FOLLOW:-1}"
+  if [[ "${2:-}" == "--no-follow" ]] || [[ "${1:-}" == "--no-follow" ]]; then
+    follow=0
+  fi
   pid="$(read_pid || true)"
   if is_alive "${pid:-}"; then
-    echo "已在运行 pid=${pid}，跳过启动。先 bash colab_webui.sh stop 再 start。"
-    cmd_logs
+    echo "已在运行 pid=${pid}。下面跟随日志（中断单元格只停止显示，不会关 WebUI）。"
+    if [[ "$follow" == "1" ]]; then
+      cmd_follow
+    else
+      cmd_logs
+    fi
     return 0
   fi
   rm -f "$PID_FILE"
   : >"$LOG_FILE"
-  echo "后台启动 webui_clone.py …" | tee -a "$LOG_FILE"
-  nohup python webui_clone.py \
+  echo "启动 webui_clone.py，日志同时写入终端和 ${LOG_FILE}"
+  # -u：print/logging 立刻出现在终端，不要等缓冲
+  PYTHONUNBUFFERED=1 nohup python -u webui_clone.py \
     --share --fp16 --force-gpu \
     --server-name 0.0.0.0 --port "$PORT" \
     >>"$LOG_FILE" 2>&1 &
   echo $! >"$PID_FILE"
-  echo "pid=$(cat "$PID_FILE")  日志: ${LOG_FILE}"
-  echo "等 8 秒看公网链接…"
-  sleep 8
-  cmd_logs
+  echo "pid=$(cat "$PID_FILE")"
+  if [[ "$follow" == "1" ]]; then
+    echo "正在把日志打到终端。中断本格只停止跟随；退出请运行 stop。"
+    cmd_follow
+  else
+    sleep 8
+    cmd_logs
+  fi
+}
+
+cmd_follow() {
+  local pid
+  pid="$(read_pid || true)"
+  if [[ ! -f "$LOG_FILE" ]]; then
+    echo "(还没有日志)"
+    return 0
+  fi
+  trap 'echo; echo "已停止跟随日志。WebUI 若仍在运行，用 bash colab_webui.sh stop 退出。"; exit 0' INT TERM
+  if is_alive "${pid:-}"; then
+    tail -n +1 -f "$LOG_FILE" --pid="$pid"
+  else
+    tail -n +1 -f "$LOG_FILE"
+  fi
 }
 
 cmd_logs() {
@@ -106,10 +135,11 @@ usage() {
 }
 
 case "${1:-}" in
-  start) cmd_start ;;
+  start) cmd_start "${2:-}" ;;
   stop) cmd_stop ;;
   status) cmd_status ;;
   logs) cmd_logs ;;
+  follow) cmd_follow ;;
   -h|--help|help) usage ;;
   *)
     usage
