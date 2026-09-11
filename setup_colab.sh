@@ -97,12 +97,6 @@ PY
 
 python -m pip install --prefer-binary modelscope huggingface_hub gradio HyperPyYAML wetext WeTextProcessing inflect
 
-log "安装 qwen-tts（--no-deps，避免把 transformers / huggingface_hub / gradio 降级）"
-python -m pip install --prefer-binary --no-deps qwen-tts
-python -m pip install --prefer-binary sox
-# 若之前已被 qwen-tts 0.1.1 拉低 huggingface_hub，diffusers 会报冲突；拉回 1.x
-python -m pip install --prefer-binary "huggingface_hub>=1.23"
-
 if [[ ! -f "${MODEL_DIR}/llm.pt" ]]; then
   log "下载 Fun-CosyVoice3-0.5B-2512（Hugging Face / ModelScope），约 7GB+"
   python "${ROOT}/download_models.py" --out "$MODEL_DIR" --source "$DOWNLOAD_SOURCE"
@@ -125,12 +119,7 @@ def ver(name: str) -> str:
 print("python", sys.version.split()[0])
 print("torch", torch.__version__, "cuda", torch.cuda.is_available())
 print("transformers", ver("transformers"), "huggingface_hub", ver("huggingface_hub"))
-print("gradio", ver("gradio"), "qwen-tts", ver("qwen-tts"))
-try:
-    import qwen_tts  # noqa: F401
-    print("qwen_tts import OK")
-except Exception as exc:  # noqa: BLE001
-    print("qwen_tts import FAIL", exc)
+print("gradio", ver("gradio"))
 if torch.cuda.is_available():
     print(
         "gpu",

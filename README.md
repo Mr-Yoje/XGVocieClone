@@ -1,6 +1,6 @@
 # Fun-CosyVoice3-0.5B-2512 声音克隆 Demo
 
-用官方 **[Fun-CosyVoice3-0.5B-2512](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512)**（`AutoModel` / `llm.pt`）做零样本克隆，并与 **Qwen3-TTS-12Hz-0.6B-Base** 对比。
+用官方 **[Fun-CosyVoice3-0.5B-2512](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512)**（`AutoModel` / `llm.pt`）做零样本克隆和纯文本 TTS。
 
 ## 环境要求
 
@@ -14,7 +14,7 @@
 
 1. 打开上面的徽章（或手动打开 [`colab_clone.ipynb`](https://colab.research.google.com/github/Mr-Yoje/XGVocieClone/blob/main/colab_clone.ipynb)）。
 2. **代码执行程序 → 更改运行时类型 → T4 GPU**。
-3. 先跑 **「同步最新代码」**（`git pull`），再跑安装/启动。启动格在**前台**跑，日志实时出现在该格；应看到 `http://127.0.0.1:7860`。若没有 `*.gradio.live`，再跑 **Colab 端口转发**。中断启动格会停掉 WebUI；也可用 **「停止 / 退出 WebUI」**。
+3. 先跑 **「同步最新代码」**（`git pull`），再跑安装。Colab **不启动 Gradio**，在笔记本格里直接调用 `demo_clone.run_clone`，日志和报错会出现在该格输出里。本机 Web 界面仍用 `python webui_clone.py`。
 
 Colab 使用预装的 CUDA PyTorch，不走 conda。脚本见 `setup_colab.sh`。
 
@@ -111,15 +111,7 @@ conda activate cosyvoice
 python webui_clone.py
 ```
 
-浏览器打开 `http://127.0.0.1:7860`。默认 **纯文本 TTS（官方默认音色）**：只填要说的句子，对比 **Fun-CosyVoice3-0.5B-2512** 与 **Qwen3-TTS-12Hz-0.6B-Base**。克隆请改选「声音克隆」并上传 3–10 秒参考音。显存紧张可 `--no-qwen`。
-
-首次对比 Qwen 会从 Hugging Face 拉取 `Qwen/Qwen3-TTS-12Hz-0.6B-Base`（也可预先放到 `pretrained_models/Qwen3-TTS-12Hz-0.6B-Base`）。需安装：`pip install -U qwen-tts`。
-
-命令行同时出 Qwen 结果：
-
-```powershell
-python demo_clone.py --tts-only --with-qwen --text "八百标兵奔北坡，北坡炮兵并排跑。"
-```
+浏览器打开 `http://127.0.0.1:7860`。默认 **纯文本 TTS（官方默认音色）**：只填要说的句子。克隆请改选「声音克隆」并上传 3–10 秒参考音。
 
 命令行纯文本 TTS：
 

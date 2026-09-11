@@ -1,4 +1,4 @@
-"""CosyVoice 3-0.5B zero-shot clone CLI (Fun-CosyVoice3-0.5B-2512 vs Qwen3-TTS).
+"""CosyVoice 3-0.5B zero-shot clone CLI (Fun-CosyVoice3-0.5B-2512).
 
 Depends on a local FunAudioLLM/CosyVoice checkout (see README.md).
 """
@@ -123,14 +123,29 @@ def reset_runtime_state(cosyvoice) -> None:
             cache.clear()
 
 
+_COSYVOICE = None
+_COSYVOICE_KEY = None
+
+
 def load_cosyvoice(model_dir: Path, fp16: bool, *, AutoModel=None):
     """Official AutoModel: Fun-CosyVoice3-0.5B-2512 llm.pt only."""
+    global _COSYVOICE, _COSYVOICE_KEY
+    injected = AutoModel is not None
     if AutoModel is None:
         from cosyvoice.cli.cosyvoice import AutoModel as AutoModel
 
     model_dir = Path(model_dir)
-    print(f"加载 Fun-CosyVoice3-0.5B-2512（官方 AutoModel / llm.pt）: {model_dir}")
-    return AutoModel(model_dir=str(model_dir), load_trt=False, fp16=fp16)
+    key = (str(model_dir.resolve()), bool(fp16))
+    if not injected and _COSYVOICE is not None and _COSYVOICE_KEY == key:
+        print("复用已加载的 Fun-CosyVoice3-0.5B-2512", flush=True)
+        return _COSYVOICE
+
+    print(f"加载 Fun-CosyVoice3-0.5B-2512（官方 AutoModel / llm.pt）: {model_dir}", flush=True)
+    model = AutoModel(model_dir=str(model_dir), load_trt=False, fp16=fp16)
+    if not injected:
+        _COSYVOICE = model
+        _COSYVOICE_KEY = key
+    return model
 
 
 PROMPT_WAV_SR = 16000
@@ -201,7 +216,7 @@ def run_clone(args: argparse.Namespace) -> Path:
         prompt_wav, prompt_raw = resolve_default_prompt(
             Path(args.cosyvoice_root).resolve(), model_dir
         )
-        print(f"纯文本 TTS：使用官方默认音色 {prompt_wav}")
+        print(f"纯文本 TTS：使用官方默认音色 {prompt_wav}", flush=True)
     else:
         if not args.prompt_wav or not args.prompt_text:
             raise SystemExit("克隆模式需要 --prompt-wav 和 --prompt-text；纯文本 TTS 请加 --tts-only。")
@@ -210,18 +225,18 @@ def run_clone(args: argparse.Namespace) -> Path:
             raise FileNotFoundError(f"参考音频不存在: {prompt_wav}")
         prompt_raw = args.prompt_text
 
-    print(f"加载模型: {model_dir}")
+    print(f"加载模型: {model_dir}", flush=True)
     t0 = time.time()
     cosyvoice = load_cosyvoice(model_dir, args.fp16)
-    print(f"模型就绪，用时 {time.time() - t0:.1f}s，采样率 {cosyvoice.sample_rate}")
+    print(f"模型就绪，用时 {time.time() - t0:.1f}s，采样率 {cosyvoice.sample_rate}", flush=True)
 
     prompt_text = wrap_prompt_text(prompt_raw)
     tts_text = args.text.strip()
     warn = prompt_length_warning(tts_text, prompt_raw)
     if warn:
-        print(f"[warn] {warn}")
-    print(f"prompt_text: {prompt_text}")
-    print(f"tts_text   : {tts_text}")
+        print(f"[warn] {warn}", flush=True)
+    print(f"prompt_text: {prompt_text}", flush=True)
+    print(f"tts_text   : {tts_text}", flush=True)
     prompt_wav = prepare_prompt_wav(prompt_wav)
 
     t1 = time.time()
@@ -256,23 +271,8 @@ def run_clone(args: argparse.Namespace) -> Path:
     torchaudio.save(str(out_path), speech.contiguous(), cosyvoice.sample_rate)
     elapsed = time.time() - t1
     duration = speech.shape[-1] / cosyvoice.sample_rate
-    print(f"已保存: {out_path}")
-    print(f"音频时长 {duration:.2f}s，合成用时 {elapsed:.2f}s，RTF={elapsed / max(duration, 1e-6):.3f}")
-
-    if args.with_qwen:
-        from qwen3_tts import qwen_voice_clone
-
-        qwen_name = Path(args.out_name).stem + "_qwen3.wav"
-        qwen_path = out_dir / qwen_name
-        tq = time.time()
-        qwen_wav, qwen_sr = qwen_voice_clone(tts_text, str(prompt_wav), prompt_raw)
-        torchaudio.save(str(qwen_path), qwen_wav.contiguous(), qwen_sr)
-        q_elapsed = time.time() - tq
-        q_dur = qwen_wav.shape[-1] / qwen_sr
-        print(f"已保存 Qwen3-TTS: {qwen_path}")
-        print(
-            f"Qwen3 时长 {q_dur:.2f}s，合成用时 {q_elapsed:.2f}s，RTF={q_elapsed / max(q_dur, 1e-6):.3f}"
-        )
+    print(f"已保存: {out_path}", flush=True)
+    print(f"音频时长 {duration:.2f}s，合成用时 {elapsed:.2f}s，RTF={elapsed / max(duration, 1e-6):.3f}", flush=True)
 
     return out_path
 
@@ -295,11 +295,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tts-only", action="store_true", help="纯文本 TTS，使用官方 zero_shot_prompt 默认音色")
     parser.add_argument("--fp16", action="store_true", help="仅在显存足够的 GPU 上建议开启")
     parser.add_argument("--force-gpu", action="store_true")
-    parser.add_argument(
-        "--with-qwen",
-        action="store_true",
-        help="额外用 Qwen3-TTS-12Hz-0.6B-Base 克隆同一参考音",
-    )
     return parser
 
 

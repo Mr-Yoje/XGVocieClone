@@ -98,7 +98,7 @@ conda create -n "$CONDA_ENV_NAME" -y python=3.10
 conda activate "$CONDA_ENV_NAME"
 python -m pip install -U pip
 python -m pip install -r "${COSY_DIR}/requirements.txt" -i "$PIP_INDEX" --trusted-host="$PIP_HOST"
-python -m pip install modelscope huggingface_hub gradio torchaudio qwen-tts -i "$PIP_INDEX" --trusted-host="$PIP_HOST"
+python -m pip install modelscope huggingface_hub gradio torchaudio -i "$PIP_INDEX" --trusted-host="$PIP_HOST"
 
 log "环境已就绪。"
 echo "  conda 初始化文件: ${CONDA_SH}"
