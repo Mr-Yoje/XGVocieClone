@@ -14,7 +14,7 @@
 
 1. 打开上面的徽章（或手动打开 [`colab_clone.ipynb`](https://colab.research.google.com/github/Mr-Yoje/XGVocieClone/blob/main/colab_clone.ipynb)）。
 2. **代码执行程序 → 更改运行时类型 → T4 GPU**。
-3. 先跑 **「同步最新代码」**（`git pull`），再跑安装。Colab **不启动 Gradio**，在笔记本格里直接调用 `demo_clone.run_clone`，日志和报错会出现在该格输出里。本机 Web 界面仍用 `python webui_clone.py`。
+3. 先跑 **「同步最新代码」**（`git pull`），再跑安装，然后跑 **「启动 WebUI」**。该格会把 Gradio 日志持续打在下面；出现 `https://….gradio.live` 后复制到浏览器打开。中断该格或跑「停止 WebUI」即可关掉服务。不要加 `--fp16`。
 
 Colab 使用预装的 CUDA PyTorch，不走 conda。脚本见 `setup_colab.sh`。
 

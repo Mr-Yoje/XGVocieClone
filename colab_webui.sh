@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Colab：停掉占用 7860 的 WebUI（启动格在笔记本内核里直接跑 python）。
-# 用法（仓库根目录）: bash colab_webui.sh stop
+# Colab：停掉占用 7860 的 WebUI 子进程。
+# 用法（仓库根目录）: bash colab_webui.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

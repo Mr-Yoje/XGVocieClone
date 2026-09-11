@@ -239,27 +239,8 @@ def main() -> None:
     print(f"本机打开: http://127.0.0.1:{args.port}", flush=True)
     if args.share:
         print("正在申请 Gradio 公网链接（*.gradio.live），请等十几秒…", flush=True)
-        print("若一直没有 live 链接：Colab 请跑「端口转发」格。", flush=True)
+        print("出现 Running on public URL 后，复制该 https 链接到浏览器打开。", flush=True)
     print("=" * 64, flush=True)
-
-    import threading
-
-    def _colab_port_hint() -> None:
-        time.sleep(2)
-        try:
-            from google.colab import output  # type: ignore
-
-            print(
-                f"Colab 端口转发（不依赖 gradio.live）: 见下方窗口，或新单元格运行\n"
-                f"  from google.colab import output\n"
-                f"  output.serve_kernel_port_as_window({args.port})",
-                flush=True,
-            )
-            output.serve_kernel_port_as_window(args.port)
-        except Exception:
-            pass
-
-    threading.Thread(target=_colab_port_hint, daemon=True).start()
 
     try:
         demo.queue().launch(
@@ -268,6 +249,7 @@ def main() -> None:
             share=args.share,
             show_error=True,
             quiet=False,
+            inbrowser=False,
         )
     except KeyboardInterrupt:
         print("\nKeyboardInterrupt，正在关闭…", flush=True)
@@ -276,6 +258,67 @@ def main() -> None:
         except Exception:
             pass
         sys.exit(0)
+
+
+def stream_colab_webui() -> None:
+    """Run Gradio in a child process; print its stdout on this thread so Colab shows logs live."""
+    import subprocess
+
+    root = Path(__file__).resolve().parent
+    os.chdir(root)
+    stop_sh = root / "colab_webui.sh"
+    if stop_sh.exists():
+        subprocess.run(["bash", str(stop_sh)], check=False)
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    env.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+    cmd = [
+        sys.executable,
+        "-u",
+        str(root / "webui_clone.py"),
+        "--share",
+        "--force-gpu",
+        "--server-name",
+        "0.0.0.0",
+        "--port",
+        "7860",
+    ]
+    print("子进程启动 WebUI（不要加 --fp16）。", flush=True)
+    print("请等日志出现 Running on public URL，把 https://….gradio.live 粘到浏览器。", flush=True)
+    print("中断本格会停止服务。", flush=True)
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(root),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        start_new_session=True,
+    )
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+        rc = proc.wait()
+        if rc:
+            print(f"WebUI 退出码 {rc}", flush=True)
+    except KeyboardInterrupt:
+        print("\n正在停止 WebUI…", flush=True)
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except Exception:
+            proc.terminate()
+        try:
+            proc.wait(timeout=8)
+        except Exception:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                proc.kill()
 
 
 if __name__ == "__main__":
