@@ -71,10 +71,9 @@ cmd_start() {
     echo "已在运行 pid=${pid}，先停止再前台启动…"
     cmd_stop
   fi
-  echo "前台启动 webui_clone.py，日志会实时打在本格。"
-  echo $$ >"$PID_FILE"
+  echo "前台启动 webui_clone.py（子进程阻塞本脚本，日志走 stdout）。"
   export PYTHONUNBUFFERED=1
-  exec python -u webui_clone.py \
+  python -u webui_clone.py \
     --share --fp16 --force-gpu \
     --server-name 0.0.0.0 --port "$PORT"
 }
