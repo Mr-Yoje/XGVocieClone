@@ -19,7 +19,6 @@ from demo_clone import (
     maybe_force_cpu,
     prepare_prompt_wav,
     prompt_length_warning,
-    quiet_flash_attn_notice,
     reset_runtime_state,
     resolve_default_prompt,
     wrap_instruct_text,
@@ -33,7 +32,6 @@ MODE_CLONE = "声音克隆"
 
 def _quiet_http_loggers() -> None:
     """httpx/httpcore 默认会把 TLS 握手打成 DEBUG，淹没监听地址。"""
-    quiet_flash_attn_notice()
     os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
     logging.basicConfig(level=logging.INFO, force=False)
     logging.getLogger().setLevel(logging.INFO)

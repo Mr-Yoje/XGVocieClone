@@ -123,42 +123,11 @@ def reset_runtime_state(cosyvoice) -> None:
             cache.clear()
 
 
-def quiet_flash_attn_notice() -> None:
-    """CosyVoice/Qwen print a flash-attn warning; Colab Py3.13 usually cannot install it."""
-    import builtins
-
-    if getattr(builtins.print, "_xg_flash_filter", False):
-        return
-    orig = builtins.print
-    state = {"held": [], "said": False}
-
-    def filtered(*args, **kwargs):
-        text = " ".join(str(a) for a in args)
-        stripped = text.strip()
-        if stripped and set(stripped) <= {"*"}:
-            state["held"].append((args, kwargs))
-            return
-        if "flash-attn is not installed" in text:
-            state["held"].clear()
-            if not state["said"]:
-                state["said"] = True
-                orig("未安装 flash-attn，已用 PyTorch 注意力（Colab 上一般装不上）。不影响合成结果。", **kwargs)
-            return
-        for held_args, held_kwargs in state["held"]:
-            orig(*held_args, **held_kwargs)
-        state["held"].clear()
-        orig(*args, **kwargs)
-
-    filtered._xg_flash_filter = True  # type: ignore[attr-defined]
-    builtins.print = filtered
-
-
 def load_cosyvoice(model_dir: Path, fp16: bool, *, AutoModel=None):
     """Official AutoModel: Fun-CosyVoice3-0.5B-2512 llm.pt only."""
     if AutoModel is None:
         from cosyvoice.cli.cosyvoice import AutoModel as AutoModel
 
-    quiet_flash_attn_notice()
     model_dir = Path(model_dir)
     print(f"加载 Fun-CosyVoice3-0.5B-2512（官方 AutoModel / llm.pt）: {model_dir}")
     return AutoModel(model_dir=str(model_dir), load_trt=False, fp16=fp16)
