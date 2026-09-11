@@ -90,8 +90,8 @@ source "$CONDA_SH"
 conda activate "$CONDA_ENV_NAME"
 
 if [[ "$SKIP_DOWNLOAD" -ne 1 ]]; then
-  if [[ ! -f "${MODEL_DIR}/llm.rl.pt" || ! -f "${MODEL_DIR}/cosyvoice3.yaml" ]]; then
-    echo "==> 下载 Fun-CosyVoice3-0.5B-2512（含 llm.rl.pt）"
+  if [[ ! -f "${MODEL_DIR}/llm.pt" || ! -f "${MODEL_DIR}/cosyvoice3.yaml" ]]; then
+    echo "==> 下载 Fun-CosyVoice3-0.5B-2512"
     python "${ROOT}/download_models.py" --out "$MODEL_DIR"
   else
     echo "==> 已检测到模型权重，跳过下载: ${MODEL_DIR}"

@@ -77,7 +77,6 @@ def get_qwen_model(model_id: str = QWEN_MODEL_ID):
         raise RuntimeError(_LOAD_ERROR)
     _patch_check_model_inputs()
     try:
-        import torch
         from qwen_tts import Qwen3TTSModel
     except ImportError as exc:
         _LOAD_ERROR = "未安装 qwen-tts。请执行: pip install -U qwen-tts"

@@ -1,4 +1,4 @@
-"""Download Fun-CosyVoice3-0.5B (contains llm.pt + llm.rl.pt)."""
+"""Download Fun-CosyVoice3-0.5B-2512 (official AutoModel uses llm.pt)."""
 
 from __future__ import annotations
 
@@ -50,11 +50,11 @@ def main() -> None:
             ttsfrd = out.parent / "CosyVoice-ttsfrd"
             snapshot_download("FunAudioLLM/CosyVoice-ttsfrd", local_dir=str(ttsfrd))
 
-    rl = out / "llm.rl.pt"
     base = out / "llm.pt"
-    print(f"llm.pt     : {'OK' if base.exists() else 'MISSING'}  {base}")
-    print(f"llm.rl.pt  : {'OK' if rl.exists() else 'MISSING'}  {rl}")
-    print("下载完成。")
+    yaml = out / "cosyvoice3.yaml"
+    print(f"llm.pt           : {'OK' if base.exists() else 'MISSING'}  {base}")
+    print(f"cosyvoice3.yaml  : {'OK' if yaml.exists() else 'MISSING'}  {yaml}")
+    print("下载完成。Fun-CosyVoice3-0.5B-2512 走官方 AutoModel（llm.pt）。")
 
 
 if __name__ == "__main__":

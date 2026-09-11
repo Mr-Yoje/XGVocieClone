@@ -1,13 +1,6 @@
-# CosyVoice 3-0.5B-RL 声音克隆 Demo
+# Fun-CosyVoice3-0.5B-2512 声音克隆 Demo
 
-用官方 **Fun-CosyVoice3-0.5B-2512** 做零样本克隆。仓库里同时有：
-
-| 文件 | 含义 |
-| --- | --- |
-| `llm.pt` | 基座 talker |
-| `llm.rl.pt` | RL 后的 talker（CER/WER 更低，本 demo 默认用这个） |
-
-官方 `AutoModel` 只会加载 `llm.pt`。本仓库在加载后把 `llm.rl.pt` 灌进 LLM，即 **3-0.5B-RL**。
+用官方 **[Fun-CosyVoice3-0.5B-2512](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512)**（`AutoModel` / `llm.pt`）做零样本克隆，并与 **Qwen3-TTS-12Hz-0.6B-Base** 对比。
 
 ## 环境要求
 
@@ -70,7 +63,7 @@ python webui_clone.py
 python download_models.py --source huggingface
 ```
 
-权重约 **7 GB+**（含 `llm.pt`、`llm.rl.pt`、flow、speech tokenizer）。
+权重约 **7 GB+**（`llm.pt`、flow、speech tokenizer 等，来自 Fun-CosyVoice3-0.5B-2512）。
 
 ## 命令行克隆
 
@@ -85,12 +78,6 @@ python demo_clone.py `
 ```
 
 输出：`outputs\clone.wav`。
-
-对比基座（非 RL）：
-
-```powershell
-python demo_clone.py --use-base --prompt-wav prompts\ref.wav --prompt-text "……" --text "……" --out-name clone_base.wav
-```
 
 带情感/方言指令（`inference_instruct2`）：
 
@@ -124,7 +111,7 @@ conda activate cosyvoice
 python webui_clone.py
 ```
 
-浏览器打开 `http://127.0.0.1:7860`。默认模式是 **纯文本 TTS（官方默认音色）**：只填要说的句子，对比 CosyVoice RL、基座，以及 **Qwen3-TTS-12Hz-0.6B-Base**（同一默认参考音）。克隆请改选「克隆：对比 RL / 基座 / Qwen3」并上传 3–10 秒参考音。基座与 RL 默认各加载一份 CosyVoice（同一输入、两路独立输出）；T4 显存不够可加 `--shared-talker` 或关掉 Qwen（`--no-qwen`）。
+浏览器打开 `http://127.0.0.1:7860`。默认 **纯文本 TTS（官方默认音色）**：只填要说的句子，对比 **Fun-CosyVoice3-0.5B-2512** 与 **Qwen3-TTS-12Hz-0.6B-Base**。克隆请改选「声音克隆」并上传 3–10 秒参考音。显存紧张可 `--no-qwen`。
 
 首次对比 Qwen 会从 Hugging Face 拉取 `Qwen/Qwen3-TTS-12Hz-0.6B-Base`（也可预先放到 `pretrained_models/Qwen3-TTS-12Hz-0.6B-Base`）。需安装：`pip install -U qwen-tts`。
 
@@ -144,5 +131,5 @@ python demo_clone.py --tts-only --text "八百标兵奔北坡，北坡炮兵并�
 
 1. CosyVoice 3 的 prompt 会自动加上 `You are a helpful assistant.<|endofprompt|>`，你只需填录音原文。
 2. 目标文本过短、明显短于参考转写时，官方会告警，效果可能变差。
-3. 首次 CPU 推理可能要数分钟；有 8GB+ 显存时可加 `--fp16 --force-gpu`。`--fp16` 只启用官方 autocast，不会把 `llm.pt` / `llm.rl.pt` 整模转成 half（转 half 会导致 RL 0 秒、基座乱说）。
+3. 首次 CPU 推理可能要数分钟；有 8GB+ 显存时可加 `--fp16 --force-gpu`。`--fp16` 只启用官方 autocast，不要把 LLM 整模转成 half。
 4. 仅用于你有权使用的声音样本（本人或已授权音色）。

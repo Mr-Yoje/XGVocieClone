@@ -103,8 +103,8 @@ python -m pip install --prefer-binary sox
 # 若之前已被 qwen-tts 0.1.1 拉低 huggingface_hub，diffusers 会报冲突；拉回 1.x
 python -m pip install --prefer-binary "huggingface_hub>=1.23"
 
-if [[ ! -f "${MODEL_DIR}/llm.rl.pt" ]]; then
-  log "下载 Fun-CosyVoice3-0.5B-2512（含 llm.rl.pt），约 7GB+"
+if [[ ! -f "${MODEL_DIR}/llm.pt" ]]; then
+  log "下载 Fun-CosyVoice3-0.5B-2512（Hugging Face / ModelScope），约 7GB+"
   python "${ROOT}/download_models.py" --out "$MODEL_DIR" --source "$DOWNLOAD_SOURCE"
 else
   log "已有模型权重，跳过下载: ${MODEL_DIR}"
