@@ -13,4 +13,6 @@ data/*
 !data/.gitkeep
 !data/*.txt
 !data/*.json
+!data/*.wav
+!data/*.m4a
 tools/
