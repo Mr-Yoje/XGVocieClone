@@ -21,7 +21,7 @@
 
 1. 打开上面的徽章（或手动打开 [`colab_clone.ipynb`](https://colab.research.google.com/github/Mr-Yoje/XGVocieClone/blob/main/colab_clone.ipynb)）。
 2. **代码执行程序 → 更改运行时类型 → T4 GPU**。
-3. 依次运行单元格。启动格会**先出网页地址**（模型等第一次点生成再加载）。日志同时打在该格输出和 `outputs/webui.log`。若没有 `*.gradio.live`，再跑 **Colab 端口转发** 格。中断启动格只停止看日志；真正退出请运行 **「停止 / 退出 WebUI」**。
+3. 先跑 **「同步最新代码」**（`git pull`），再跑安装/启动。启动格在**前台**跑，日志实时出现在该格；应看到 `http://127.0.0.1:7860`。若没有 `*.gradio.live`，再跑 **Colab 端口转发**。中断启动格会停掉 WebUI；也可用 **「停止 / 退出 WebUI」**。
 
 Colab 使用预装的 CUDA PyTorch，不走 conda。脚本见 `setup_colab.sh`。
 

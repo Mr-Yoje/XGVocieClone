@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import signal
 import sys
@@ -31,6 +32,28 @@ MODE_TTS = "纯文本 TTS（默认音色）"
 MODE_COMPARE = "克隆：对比 RL / 基座 / Qwen3"
 MODE_RL = "克隆：仅 RL"
 MODE_BASE = "克隆：仅基座"
+
+
+def _quiet_http_loggers() -> None:
+    """httpx/httpcore 默认会把 TLS 握手打成 DEBUG，淹没监听地址。"""
+    os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+    logging.basicConfig(level=logging.INFO, force=False)
+    logging.getLogger().setLevel(logging.INFO)
+    for name in (
+        "httpx",
+        "httpcore",
+        "httpcore.connection",
+        "httpcore.http11",
+        "httpcore.proxy",
+        "urllib3",
+        "urllib3.connectionpool",
+        "huggingface_hub",
+        "huggingface_hub.utils",
+        "asyncio",
+        "gradio",
+        "gradio_client",
+    ):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 class CloneEngine:
@@ -222,6 +245,7 @@ def main() -> None:
         help="基座与 RL 共用一份 CosyVoice（省显存，会切换权重）",
     )
     args = parser.parse_args()
+    _quiet_http_loggers()
 
     import gradio as gr
 
@@ -232,6 +256,7 @@ def main() -> None:
         force_gpu=args.force_gpu,
         shared_talker=args.shared_talker,
     )
+    _quiet_http_loggers()
 
     with gr.Blocks(title="CosyVoice 3 / Qwen3-TTS 声音对比") as demo:
         gr.Markdown(
@@ -296,7 +321,7 @@ def main() -> None:
     print(f"本机打开: http://127.0.0.1:{args.port}", flush=True)
     if args.share:
         print("正在申请 Gradio 公网链接（*.gradio.live），请等十几秒…", flush=True)
-        print("若一直没有 live 链接：Colab 可用端口转发，见笔记本说明。", flush=True)
+        print("若一直没有 live 链接：Colab 请跑「端口转发」格。", flush=True)
     print("=" * 64, flush=True)
 
     import threading
