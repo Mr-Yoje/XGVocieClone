@@ -9,3 +9,8 @@ __pycache__/
 .DS_Store
 *.wav
 !prompts/.gitkeep
+data/*
+!data/.gitkeep
+!data/*.txt
+!data/*.json
+tools/

@@ -10,9 +10,12 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 
 PROMPT_PREFIX = "You are a helpful assistant.<|endofprompt|>"
+DEFAULT_PROMPT_TEXT = "希望你以后能够做的比我还好呦。"
+DEFAULT_TTS_TEXT = "八百标兵奔北坡，北坡炮兵并排跑，炮兵怕把标兵碰，标兵怕碰炮兵炮。"
 MIN_GPU_GIB_FOR_CUDA = 6.0
 
 
@@ -21,6 +24,28 @@ def wrap_prompt_text(transcript: str) -> str:
     if "<|endofprompt|>" in text:
         return text
     return PROMPT_PREFIX + text
+
+
+def default_prompt_wav_candidates(cosyvoice_root: Path, model_dir: Optional[Path] = None) -> list:
+    root = Path(__file__).resolve().parent
+    paths = [
+        Path(cosyvoice_root) / "asset" / "zero_shot_prompt.wav",
+    ]
+    if model_dir is not None:
+        paths.append(Path(model_dir) / "asset" / "zero_shot_prompt.wav")
+    paths.append(root / "third_party" / "CosyVoice" / "asset" / "zero_shot_prompt.wav")
+    return paths
+
+
+def resolve_default_prompt(cosyvoice_root: Path, model_dir: Optional[Path] = None):
+    """Official CosyVoice3 demo voice: no user clone audio required."""
+    for path in default_prompt_wav_candidates(cosyvoice_root, model_dir):
+        if path.exists():
+            return path.resolve(), DEFAULT_PROMPT_TEXT
+    searched = "\n".join(f"  - {p}" for p in default_prompt_wav_candidates(cosyvoice_root, model_dir))
+    raise FileNotFoundError(
+        "未找到官方默认音色 zero_shot_prompt.wav。请先克隆 CosyVoice 仓库，或指定 --prompt-wav。\n" + searched
+    )
 
 
 def maybe_force_cpu(force_gpu: bool) -> None:
@@ -69,15 +94,49 @@ def llm_checkpoint_path(model_dir: Path, variant: str) -> Path:
     return path
 
 
+def _unwrap_state_dict(state):
+    if not isinstance(state, dict):
+        return state
+    if "state_dict" in state and isinstance(state["state_dict"], dict):
+        state = state["state_dict"]
+    elif "model" in state and isinstance(state["model"], dict):
+        state = state["model"]
+    if state and next(iter(state)).startswith("module."):
+        state = {k[len("module.") :]: v for k, v in state.items()}
+    return state
+
+
+def reset_runtime_state(cosyvoice) -> None:
+    """Clear leftover decode caches so swapping llm.pt / llm.rl.pt does not yield empty audio."""
+    m = getattr(cosyvoice, "model", None)
+    if m is None:
+        return
+    for name in (
+        "tts_speech_token_dict",
+        "llm_end_dict",
+        "mel_overlap_dict",
+        "flow_cache_dict",
+        "hift_cache_dict",
+    ):
+        cache = getattr(m, name, None)
+        if isinstance(cache, dict):
+            cache.clear()
+
+
 def apply_llm_weights(cosyvoice, ckpt_path: Path, label: str = "") -> None:
     import torch
 
     device = getattr(cosyvoice.model, "device", None)
     if device is None:
         device = next(cosyvoice.model.llm.parameters()).device
-    state = torch.load(str(ckpt_path), map_location=device, weights_only=True)
+    state = _unwrap_state_dict(torch.load(str(ckpt_path), map_location=device, weights_only=True))
     cosyvoice.model.llm.load_state_dict(state, strict=True)
+    if getattr(cosyvoice.model, "fp16", False):
+        cosyvoice.model.llm.half()
+    else:
+        cosyvoice.model.llm.float()
     cosyvoice.model.llm.to(device).eval()
+    reset_runtime_state(cosyvoice)
     tag = label or ckpt_path.name
     print(f"已加载 talker 权重 ({tag}): {ckpt_path}")
 
@@ -86,10 +145,43 @@ def apply_rl_weights(cosyvoice, model_dir: Path) -> None:
     apply_llm_weights(cosyvoice, llm_checkpoint_path(model_dir, "rl"), label="RL")
 
 
-def concatenate_speech(chunks: list) -> "object":
+def prepare_wav_tensor(speech):
+    """Return CPU float32 [channel, time]. CosyVoice chunks are usually [1, T]; [T, 1] would look like 0s."""
+    t = speech.detach().cpu().float().contiguous()
+    if t.numel() == 0:
+        raise RuntimeError("推理返回了空张量（0 个采样）。")
+    t = t.squeeze()
+    if t.ndim == 0:
+        raise RuntimeError("推理返回了标量，没有音频。")
+    if t.ndim == 1:
+        t = t.unsqueeze(0)
+    elif t.ndim >= 3:
+        t = t.reshape(1, -1)
+    elif t.shape[0] > 8 and t.shape[0] > t.shape[1]:
+        t = t.transpose(0, 1).contiguous()
+    if t.shape[-1] < 400:
+        raise RuntimeError(
+            f"合成音频过短（{t.shape[-1]} 采样，shape={tuple(t.shape)}），"
+            "多半是 talker 权重切换后缓存未清或采样点被当成声道。"
+        )
+    return t
+
+
+def concatenate_speech(chunks: list):
     import torch
 
-    return torch.cat([c["tts_speech"] for c in chunks], dim=1)
+    waves = []
+    for chunk in chunks:
+        wav = chunk.get("tts_speech") if isinstance(chunk, dict) else chunk
+        if wav is None:
+            continue
+        try:
+            waves.append(prepare_wav_tensor(wav))
+        except RuntimeError:
+            continue
+    if not waves:
+        raise RuntimeError("推理没有返回有效音频（时长为 0）。")
+    return torch.cat(waves, dim=-1)
 
 
 def run_clone(args: argparse.Namespace) -> Path:
@@ -103,9 +195,18 @@ def run_clone(args: argparse.Namespace) -> Path:
     if not (model_dir / "cosyvoice3.yaml").exists():
         raise FileNotFoundError(f"模型目录无效（缺少 cosyvoice3.yaml）: {model_dir}")
 
-    prompt_wav = Path(args.prompt_wav).resolve()
-    if not prompt_wav.exists():
-        raise FileNotFoundError(f"参考音频不存在: {prompt_wav}")
+    if getattr(args, "tts_only", False):
+        prompt_wav, prompt_raw = resolve_default_prompt(
+            Path(args.cosyvoice_root).resolve(), model_dir
+        )
+        print(f"纯文本 TTS：使用官方默认音色 {prompt_wav}")
+    else:
+        if not args.prompt_wav or not args.prompt_text:
+            raise SystemExit("克隆模式需要 --prompt-wav 和 --prompt-text；纯文本 TTS 请加 --tts-only。")
+        prompt_wav = Path(args.prompt_wav).resolve()
+        if not prompt_wav.exists():
+            raise FileNotFoundError(f"参考音频不存在: {prompt_wav}")
+        prompt_raw = args.prompt_text
 
     print(f"加载模型: {model_dir}")
     t0 = time.time()
@@ -114,7 +215,7 @@ def run_clone(args: argparse.Namespace) -> Path:
         apply_rl_weights(cosyvoice, model_dir)
     print(f"模型就绪，用时 {time.time() - t0:.1f}s，采样率 {cosyvoice.sample_rate}")
 
-    prompt_text = wrap_prompt_text(args.prompt_text)
+    prompt_text = wrap_prompt_text(prompt_raw)
     tts_text = args.text.strip()
     print(f"prompt_text: {prompt_text}")
     print(f"tts_text   : {tts_text}")
@@ -148,9 +249,9 @@ def run_clone(args: argparse.Namespace) -> Path:
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / args.out_name
-    torchaudio.save(str(out_path), speech, cosyvoice.sample_rate)
+    torchaudio.save(str(out_path), speech.contiguous(), cosyvoice.sample_rate)
     elapsed = time.time() - t1
-    duration = speech.shape[1] / cosyvoice.sample_rate
+    duration = speech.shape[-1] / cosyvoice.sample_rate
     print(f"已保存: {out_path}")
     print(f"音频时长 {duration:.2f}s，合成用时 {elapsed:.2f}s，RTF={elapsed / max(duration, 1e-6):.3f}")
     return out_path
@@ -164,13 +265,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--model-dir",
         default=str(root / "pretrained_models" / "Fun-CosyVoice3-0.5B"),
     )
-    parser.add_argument("--prompt-wav", required=True, help="参考音频，建议 3–10 秒、尽量干净")
-    parser.add_argument("--prompt-text", required=True, help="参考音频的逐字转写（说了什么）")
-    parser.add_argument("--text", required=True, help="要用克隆音色说的目标文本")
+    parser.add_argument("--prompt-wav", default="", help="参考音频；--tts-only 时可不填")
+    parser.add_argument("--prompt-text", default="", help="参考音频转写；--tts-only 时可不填")
+    parser.add_argument("--text", required=True, help="要合成的文本")
     parser.add_argument("--instruct", default="", help="可选：风格指令，走 inference_instruct2")
     parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--out-dir", default=str(root / "outputs"))
     parser.add_argument("--out-name", default="clone.wav")
+    parser.add_argument("--tts-only", action="store_true", help="纯文本 TTS，使用官方 zero_shot_prompt 默认音色")
     parser.add_argument("--use-rl", dest="use_rl", action="store_true", default=True)
     parser.add_argument("--use-base", dest="use_rl", action="store_false", help="改用 llm.pt（非 RL）")
     parser.add_argument("--fp16", action="store_true", help="仅在显存足够的 GPU 上建议开启")

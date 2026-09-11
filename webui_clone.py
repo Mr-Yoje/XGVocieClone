@@ -10,19 +10,23 @@ import time
 from pathlib import Path
 
 from demo_clone import (
+    DEFAULT_TTS_TEXT,
     add_cosyvoice_to_path,
     apply_llm_weights,
     concatenate_speech,
     llm_checkpoint_path,
     maybe_force_cpu,
+    reset_runtime_state,
+    resolve_default_prompt,
     wrap_prompt_text,
 )
 
 
 DEFAULT_TEXT = "你好，这是一次 Fun-CosyVoice 3 零样本声音克隆测试。希望你能听出和参考音频相近的音色。"
-MODE_COMPARE = "对比 RL 与基座"
-MODE_RL = "仅 RL (llm.rl.pt)"
-MODE_BASE = "仅基座 (llm.pt)"
+MODE_TTS = "纯文本 TTS（默认音色）"
+MODE_COMPARE = "克隆：对比 RL 与基座"
+MODE_RL = "克隆：仅 RL"
+MODE_BASE = "克隆：仅基座"
 
 
 class CloneEngine:
@@ -33,18 +37,21 @@ class CloneEngine:
 
         if not (model_dir / "cosyvoice3.yaml").exists():
             raise FileNotFoundError(f"模型目录无效: {model_dir}")
+        self.cosyvoice_root = cosyvoice_root
         self.model_dir = model_dir
         self.base_ckpt = llm_checkpoint_path(model_dir, "base")
         self.rl_ckpt = llm_checkpoint_path(model_dir, "rl")
         print(f"加载模型: {model_dir}")
         t0 = time.time()
         self.model = AutoModel(model_dir=str(model_dir), load_trt=False, fp16=fp16)
-        # AutoModel 默认 llm.pt
-        self.active = "base"
-        print(f"模型就绪 {time.time() - t0:.1f}s（当前 talker=基座）")
+        # AutoModel 默认 llm.pt；立刻灌入 RL，避免第一次「仅 RL」仍走基座缓存
+        apply_llm_weights(self.model, self.rl_ckpt, label="RL")
+        self.active = "rl"
+        print(f"模型就绪 {time.time() - t0:.1f}s（当前 talker=RL）")
 
     def switch_talker(self, variant: str) -> None:
         if variant == self.active:
+            reset_runtime_state(self.model)
             return
         path = self.rl_ckpt if variant == "rl" else self.base_ckpt
         apply_llm_weights(self.model, path, label="RL" if variant == "rl" else "基座")
@@ -77,47 +84,67 @@ class CloneEngine:
     def _save(self, speech, tag: str) -> tuple[str, float]:
         import torchaudio
 
-        out = Path(tempfile.gettempdir()) / f"cosyvoice3_{tag}_{int(time.time() * 1000)}.wav"
-        torchaudio.save(str(out), speech, self.model.sample_rate)
-        dur = speech.shape[1] / self.model.sample_rate
-        return str(out), dur
+        dur = speech.shape[-1] / self.model.sample_rate
+        stamp = int(time.time() * 1000)
+        tmp = Path(tempfile.gettempdir()) / f"cosyvoice3_{tag}_{stamp}.wav"
+        out_dir = Path(__file__).resolve().parent / "outputs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        persistent = out_dir / f"{tag}_{stamp}.wav"
+        torchaudio.save(str(tmp), speech.contiguous(), self.model.sample_rate)
+        torchaudio.save(str(persistent), speech.contiguous(), self.model.sample_rate)
+        print(f"保存 {tag}: shape={tuple(speech.shape)} dur={dur:.3f}s path={persistent}")
+        return str(tmp), dur
 
     def synthesize(self, prompt_audio, prompt_text: str, tts_text: str, instruct: str, speed: float, mode: str):
-        if prompt_audio is None:
-            raise ValueError("请先上传或录制参考音频。")
-        if not prompt_text or not prompt_text.strip():
-            raise ValueError("请填写参考音频的逐字转写。")
         if not tts_text or not tts_text.strip():
             raise ValueError("请填写要合成的文本。")
 
-        want_rl = mode in (MODE_COMPARE, MODE_RL)
-        want_base = mode in (MODE_COMPARE, MODE_BASE)
+        tts_only = mode == MODE_TTS
+        if tts_only:
+            prompt_wav, prompt_raw = resolve_default_prompt(self.cosyvoice_root, self.model_dir)
+            prompt_text = prompt_raw
+        else:
+            if prompt_audio is None:
+                raise ValueError("克隆模式请先上传或录制参考音频。")
+            if not prompt_text or not prompt_text.strip():
+                raise ValueError("克隆模式请填写参考音频的逐字转写。")
+            prompt_wav = prompt_audio
+            prompt_raw = prompt_text
+
+        want_rl = mode in (MODE_COMPARE, MODE_RL, MODE_TTS)
+        want_base = mode in (MODE_COMPARE, MODE_BASE, MODE_TTS)
         lines = []
         rl_path = None
         base_path = None
 
-        if want_base:
-            self.switch_talker("base")
-            t0 = time.time()
-            speech = self._infer(prompt_audio, prompt_text, tts_text, instruct, speed)
-            base_path, dur = self._save(speech, "base")
-            elapsed = time.time() - t0
-            lines.append(
-                f"基座 llm.pt：时长 {dur:.2f}s · 用时 {elapsed:.2f}s · RTF {elapsed / max(dur, 1e-6):.3f}"
-            )
+        if tts_only:
+            lines.append(f"纯文本 TTS，默认音色：{prompt_wav}")
 
+        # 先跑 RL 再跑基座，避免「第二次推理」才切 RL 时沿用基座解码缓存出 0 秒音频
         if want_rl:
             self.switch_talker("rl")
             t0 = time.time()
-            speech = self._infer(prompt_audio, prompt_text, tts_text, instruct, speed)
+            speech = self._infer(prompt_wav, prompt_raw, tts_text, instruct, speed)
             rl_path, dur = self._save(speech, "rl")
             elapsed = time.time() - t0
             lines.append(
                 f"RL llm.rl.pt：时长 {dur:.2f}s · 用时 {elapsed:.2f}s · RTF {elapsed / max(dur, 1e-6):.3f}"
             )
 
+        if want_base:
+            self.switch_talker("base")
+            t0 = time.time()
+            speech = self._infer(prompt_wav, prompt_raw, tts_text, instruct, speed)
+            base_path, dur = self._save(speech, "base")
+            elapsed = time.time() - t0
+            lines.append(
+                f"基座 llm.pt：时长 {dur:.2f}s · 用时 {elapsed:.2f}s · RTF {elapsed / max(dur, 1e-6):.3f}"
+            )
+
         if mode == MODE_COMPARE:
             lines.append("同一参考音、同一文本，请左右试听对比音色与清晰度。")
+        if tts_only:
+            lines.append("未使用上传的参考音；这是官方默认音色的纯文本合成。")
 
         return rl_path, base_path, "\n".join(lines)
 
@@ -145,9 +172,9 @@ def main() -> None:
 
     with gr.Blocks(title="CosyVoice 3-0.5B 声音克隆对比") as demo:
         gr.Markdown(
-            "## CosyVoice 3-0.5B 声音克隆\n"
-            "上传 3–10 秒参考音频，填写逐字转写和目标文本。"
-            "默认 **对比 RL 与非 RL 基座**：同一条件各合成一遍，左右试听。"
+            "## CosyVoice 3-0.5B\n"
+            "- **纯文本 TTS**：不需要参考音，用官方默认音色朗读你输入的句子，并对比 RL / 基座。\n"
+            "- **克隆**：上传 3–10 秒参考音频并填写转写，再输入要说的新文本。"
         )
         with gr.Row():
             prompt_audio = gr.Audio(sources=["upload", "microphone"], type="filepath", label="参考音频")
@@ -157,15 +184,15 @@ def main() -> None:
                     placeholder="例如：希望你以后能够做的比我还好呦。",
                     lines=3,
                 )
-                tts_text = gr.Textbox(label="要合成的文本", value=DEFAULT_TEXT, lines=4)
+                tts_text = gr.Textbox(label="要合成的文本", value=DEFAULT_TTS_TEXT, lines=4)
                 instruct = gr.Textbox(
-                    label="可选指令（留空=纯克隆；填写则走 instruct2，例如：请用开心的语气说）",
+                    label="可选指令（留空=普通合成；填写则走 instruct2，例如：请用开心的语气说）",
                     lines=2,
                 )
                 speed = gr.Slider(0.5, 2.0, value=1.0, step=0.05, label="语速")
                 mode = gr.Radio(
-                    choices=[MODE_COMPARE, MODE_RL, MODE_BASE],
-                    value=MODE_COMPARE,
+                    choices=[MODE_TTS, MODE_COMPARE, MODE_RL, MODE_BASE],
+                    value=MODE_TTS,
                     label="生成模式",
                 )
                 run_btn = gr.Button("开始生成 / 对比", variant="primary")

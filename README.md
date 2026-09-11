@@ -124,7 +124,13 @@ conda activate cosyvoice
 python webui_clone.py
 ```
 
-浏览器打开 `http://127.0.0.1:7860`。默认模式是 **对比 RL 与基座**：同一参考音、同一文本各合成一遍，页面左右分别播放 `llm.rl.pt` 和 `llm.pt`。也可改成只跑 RL 或只跑基座。对比时会串行切换 talker 权重，不会同时占两份模型显存。
+浏览器打开 `http://127.0.0.1:7860`。默认模式是 **纯文本 TTS（官方默认音色）**：只填要说的句子，左右对比 RL 与基座。克隆请改选「克隆：对比 RL 与基座」并上传 3–10 秒参考音。
+
+命令行纯文本 TTS：
+
+```powershell
+python demo_clone.py --tts-only --text "八百标兵奔北坡，北坡炮兵并排跑。"
+```
 
 ## 使用注意
 
